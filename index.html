@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚾ MLB Bet Tracker</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #080c10; color: #e2e8f0; font-family: 'DM Mono', 'Courier New', monospace; font-size: 13px; }
+    #root { min-height: 100vh; }
+    input, select, button, textarea { font-family: inherit; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.5); }
+    select option { background: #0d1117; color: #e2e8f0; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #080c10; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #22c55e !important; box-shadow: 0 0 0 2px rgba(34,197,94,0.1); }
+    @media (max-width: 600px) { .hide-mobile { display: none !important; } }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect, useCallback, useRef } = React;
+const h = React.createElement;
+
+// ── Storage (localStorage for standalone) ──────────────────────────────────
+const LS = {
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const TIPSTERS_DEFAULT = ["Claude AI", "Own Analysis", "ChatGPT", "Gemini", "Grok", "Copilot"];
+const today = () => new Date().toISOString().slice(0, 10);
+
+const RC = {
+  win:     { bg:"#0a2e1a", text:"#4ade80", border:"#166534", emoji:"✓" },
+  loss:    { bg:"#2e0a0a", text:"#f87171", border:"#991b1b", emoji:"✗" },
+  void:    { bg:"#1a1600", text:"#facc15", border:"#854d0e", emoji:"V" },
+  pending: { bg:"#0f172a", text:"#94a3b8", border:"#334155", emoji:"⏳" },
+};
+
+const TIPSTER_STYLE = (t) => {
+  if (t === "Claude AI")     return { bg:"#0d1f3c", col:"#60a5fa", bd:"#1e3a5f" };
+  if (t === "Own Analysis")  return { bg:"#1a0d2e", col:"#c084fc", bd:"#4c1d95" };
+  if (t === "ChatGPT")       return { bg:"#0d2218", col:"#34d399", bd:"#065f46" };
+  if (t === "Gemini")        return { bg:"#1a0f00", col:"#fb923c", bd:"#7c2d12" };
+  if (t === "Grok")          return { bg:"#0f0f1a", col:"#a78bfa", bd:"#3730a3" };
+  if (t === "Copilot")       return { bg:"#001a2e", col:"#38bdf8", bd:"#075985" };
+  return { bg:"#0f172a", col:"#94a3b8", bd:"#334155" };
+};
+
+const fmt = (n) => new Intl.NumberFormat("es-CO", { style:"currency", currency:"COP", maximumFractionDigits:0 }).format(n);
+const fmtPct = (n, d) => n.toFixed(d ?? 1) + "%";
+const genId = () => Math.random().toString(36).slice(2, 10);
+
+function getStake(bet, unitSize) {
+  return bet.stakeOverride != null ? bet.stakeOverride : Math.round(bet.units * unitSize);
+}
+
+function calcPL(bet, result, unitSize) {
+  const stake = getStake(bet, unitSize);
+  if (result === "win")  return Math.round(stake * (bet.odds - 1));
+  if (result === "loss") return -stake;
+  return 0;
+}
+
+// ── Shared styles factory ─────────────────────────────────────────────────
+const S = {
+  pill: (bg, col, bd) => ({ fontSize:"10px", padding:"2px 8px", borderRadius:3, background:bg, color:col, border:"1px solid "+bd, whiteSpace:"nowrap", display:"inline-block" }),
+  inp:  { background:"#0d1117", border:"1px solid #1e293b", borderRadius:5, padding:"8px 12px", color:"#e2e8f0", width:"100%", boxSizing:"border-box", fontSize:"13px" },
+  lbl:  { fontSize:"9px", color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, display:"block" },
+  card: (borderCol) => ({ background:"#0d1117", border:"1px solid "+(borderCol||"#1e293b"), borderRadius:8, padding:"12px 14px" }),
+  btn:  (bg, col, bd) => ({ background:bg, border:"1px solid "+bd, color:col, padding:"6px 14px", borderRadius:5, cursor:"pointer", fontSize:"11px", fontFamily:"inherit", letterSpacing:"0.04em" }),
+  secTitle: { fontSize:"10px", color:"#475569", letterSpacing:"0.12em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, marginBottom:10 },
+  dot: (c) => ({ width:7, height:7, borderRadius:"50%", background:c, display:"inline-block", flexShrink:0 }),
+};
+
+// ── BetCard component ─────────────────────────────────────────────────────
+function BetCard({ bet, unitSize, onResult, onDelete, showDelete }) {
+  const c   = RC[bet.result];
+  const ts  = TIPSTER_STYLE(bet.tipster);
+  const pl  = calcPL(bet, bet.result, unitSize);
+  const stake = getStake(bet, unitSize);
+
+  return h("div", { style: { ...S.card(), borderLeft:"3px solid "+c.border, marginBottom:8 } },
+    h("div", { style: { display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", marginBottom:6 } },
+      h("div", { style: { flex:1, minWidth:0 } },
+        h("div", { style: { fontSize:"10px", color:"#475569", marginBottom:2 } }, bet.date+" · "+bet.game),
+        h("div", { style: { fontSize:"13px", fontWeight:600, color:"#f8fafc", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" } },
+          bet.isParlay && h("span", { style: S.pill("#2d1b00","#facc15","#854d0e") }, "PARLAY"),
+          bet.bet
+        ),
+        bet.notes && h("div", { style: { fontSize:"10px", color:"#475569", marginTop:3 } }, bet.notes)
+      ),
+      h("div", { style: { textAlign:"right", flexShrink:0 } },
+        h("div", { style: { fontSize:"13px", fontWeight:700, color: pl > 0 ? "#4ade80" : pl < 0 ? "#f87171" : "#94a3b8" } },
+          bet.result === "pending" ? "⏳ PENDIENTE" : (pl >= 0 ? "+" : "") + fmt(pl)
+        ),
+        h("div", { style: { fontSize:"10px", color:"#475569", marginTop:2 } }, fmt(stake)+" apost.")
+      )
+    ),
+    h("div", { style: { display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:6 } },
+      h("div", { style: { display:"flex", gap:5, flexWrap:"wrap" } },
+        h("span", { style: S.pill("#0f172a","#94a3b8","#1e293b") }, bet.odds.toFixed(2)+"x"),
+        h("span", { style: S.pill(ts.bg, ts.col, ts.bd) }, bet.tipster),
+        h("span", { style: S.pill(c.bg, c.text, c.border) }, bet.result.toUpperCase()),
+      ),
+      h("div", { style: { display:"flex", gap:3, alignItems:"center" } },
+        ["pending","win","loss","void"].map(r => {
+          const rc = RC[r];
+          const active = bet.result === r;
+          return h("button", {
+            key: r, title: r,
+            onClick: () => onResult(bet.id, r),
+            style: { padding:"3px 9px", borderRadius:3, fontSize:"11px", cursor:"pointer", border:"1px solid "+(active?rc.border:"#1e293b"), background:active?rc.bg:"transparent", color:active?rc.text:"#475569" }
+          }, rc.emoji);
+        }),
+        showDelete && h("button", { onClick: () => onDelete(bet.id), title:"Eliminar", style: { ...S.btn("transparent","#ef4444","#7f1d1d"), padding:"3px 8px", marginLeft:4 } }, "🗑")
+      )
+    )
+  );
+}
+
+// ── StatCard ───────────────────────────────────────────────────────────────
+function StatCard({ label, value, sub, accent }) {
+  return h("div", { style: { ...S.card(accent), padding:"12px 14px" } },
+    h("div", { style: { fontSize:"9px", color:"#475569", letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:5 } }, label),
+    h("div", { style: { fontSize:"20px", fontWeight:700, color: accent ? (accent === "#166534" ? "#4ade80" : accent === "#991b1b" ? "#f87171" : "#facc15") : "#f8fafc", lineHeight:1.2 } }, value),
+    h("div", { style: { fontSize:"10px", color:"#475569", marginTop:3 } }, sub)
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────
+function App() {
+  const [bets, setBets]         = useState([]);
+  const [unitSize, setUnitSize] = useState(5000);
+  const [tipsters, setTipsters] = useState(TIPSTERS_DEFAULT);
+  const [view, setView]         = useState("dashboard");
+  const [filter, setFilter]     = useState("All");
+  const [filterResult, setFilterResult] = useState("All");
+  const [editUnit, setEditUnit] = useState(false);
+  const [unitInput, setUnitInput] = useState("5000");
+  const [showAddTipster, setShowAddTipster] = useState(false);
+  const [newTipster, setNewTipster] = useState("");
+  const [loaded, setLoaded]     = useState(false);
+  const [toast, setToast]       = useState(null);
+  const toastTimer              = useRef(null);
+
+  const [form, setForm] = useState({
+    tipster:"Claude AI", game:"", bet:"", odds:"", units:"1",
+    stakeOverride:"", result:"pending", notes:"", date:today(), isParlay:false
+  });
+
+  // Load from localStorage
+  useEffect(() => {
+    const b = LS.get("mlbt_bets");
+    const u = LS.get("mlbt_unit");
+    const t = LS.get("mlbt_tipsters");
+    if (b) setBets(b);
+    if (u) { setUnitSize(u); setUnitInput(String(u)); }
+    if (t) setTipsters(t);
+    setLoaded(true);
+  }, []);
+
+  const showToast = (msg, type = "ok") => {
+    setToast({ msg, type });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2800);
+  };
+
+  const saveBets = (b) => { setBets(b); LS.set("mlbt_bets", b); };
+  const saveUnit = (u) => { setUnitSize(u); LS.set("mlbt_unit", u); };
+  const saveTipsters = (t) => { setTipsters(t); LS.set("mlbt_tipsters", t); };
+
+  const updateResult = useCallback((id, result) => {
+    saveBets(bets.map(b => b.id === id ? { ...b, result } : b));
+  }, [bets]);
+
+  const deleteBet = useCallback((id) => {
+    saveBets(bets.filter(b => b.id !== id));
+    showToast("Apuesta eliminada", "warn");
+  }, [bets]);
+
+  const addBet = () => {
+    if (!form.game || !form.bet || !form.odds) { showToast("Completa partido, apuesta y cuota", "err"); return; }
+    const nb = { ...form, id:genId(), odds:+form.odds, units:+form.units, stakeOverride: form.stakeOverride ? +form.stakeOverride : null };
+    saveBets([nb, ...bets]);
+    setForm({ tipster:form.tipster, game:"", bet:"", odds:"", units:"1", stakeOverride:"", result:"pending", notes:"", date:today(), isParlay:false });
+    showToast("Apuesta registrada ✓");
+    setView("bets");
+  };
+
+  const handleSaveUnit = () => {
+    const v = +unitInput;
+    if (v > 0) { saveUnit(v); showToast("Unidad actualizada"); }
+    setEditUnit(false);
+  };
+
+  const handleAddTipster = () => {
+    if (!newTipster.trim()) return;
+    if (tipsters.includes(newTipster.trim())) { showToast("Tipster ya existe", "err"); return; }
+    saveTipsters([...tipsters, newTipster.trim()]);
+    setNewTipster(""); setShowAddTipster(false);
+    showToast("Tipster añadido");
+  };
+
+  // ── Stats ────────────────────────────────────────────────────────────────
+  const stats = (() => {
+    const settled  = bets.filter(b => b.result !== "pending" && b.result !== "void");
+    const wins     = settled.filter(b => b.result === "win");
+    const losses   = settled.filter(b => b.result === "loss");
+    const totalPL  = bets.reduce((a, b) => a + calcPL(b, b.result, unitSize), 0);
+    const totalStaked = bets.reduce((a, b) => a + getStake(b, unitSize), 0);
+    const settledStaked = settled.reduce((a, b) => a + getStake(b, unitSize), 0);
+    const roi      = settledStaked > 0 ? (totalPL / settledStaked * 100) : 0;
+    const winRate  = settled.length > 0 ? wins.length / settled.length * 100 : null;
+    const pending  = bets.filter(b => b.result === "pending");
+    const potentialReturn = pending.reduce((a, b) => a + getStake(b, unitSize) * b.odds, 0);
+
+    const byTipster = tipsters.map(t => {
+      const tb = bets.filter(b => b.tipster === t);
+      if (!tb.length) return null;
+      const ts = tb.filter(b => b.result !== "pending" && b.result !== "void");
+      const tw = ts.filter(b => b.result === "win");
+      const tpl = tb.reduce((a, b) => a + calcPL(b, b.result, unitSize), 0);
+      const tstaked = tb.reduce((a, b) => a + getStake(b, unitSize), 0);
+      return { name:t, total:tb.length, wins:tw.length, losses:ts.length-tw.length, settled:ts.length, pl:tpl, staked:tstaked };
+    }).filter(Boolean);
+
+    return { wins:wins.length, losses:losses.length, settled:settled.length, pending:pending.length, totalPL, totalStaked, roi, winRate, byTipster, potentialReturn };
+  })();
+
+  const filtered = bets.filter(b => (filter==="All"||b.tipster===filter) && (filterResult==="All"||b.result===filterResult));
+
+  // Group bets by date for timeline
+  const byDate = filtered.reduce((acc, b) => { (acc[b.date] = acc[b.date]||[]).push(b); return acc; }, {});
+  const sortedDates = Object.keys(byDate).sort((a,b) => b.localeCompare(a));
+
+  if (!loaded) return h("div", { style:{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#080c10" } },
+    h("span", { style:{color:"#22c55e", fontSize:"14px"} }, "Cargando...")
+  );
+
+  // ── Layout pieces ─────────────────────────────────────────────────────
+  const NavBtn = (label, v, count) => h("button", {
+    key: v, onClick: () => setView(v),
+    style: { padding:"6px 14px", borderRadius:5, border:"1px solid "+(view===v?"#22c55e":"#1e293b"), background:view===v?"#0d2818":"transparent", color:view===v?"#22c55e":"#64748b", cursor:"pointer", fontSize:"11px", letterSpacing:"0.06em" }
+  }, label + (count != null ? ` (${count})` : ""));
+
+  const FilterChip = (label, val, current, setter) => h("button", {
+    key: val, onClick: () => setter(val),
+    style: { padding:"3px 10px", borderRadius:20, border:"1px solid "+(current===val?"#22c55e":"#1e293b"), background:current===val?"#0d2818":"transparent", color:current===val?"#4ade80":"#475569", cursor:"pointer", fontSize:"10px" }
+  }, label);
+
+  return h("div", { style:{ minHeight:"100vh", background:"#080c10", color:"#e2e8f0" } },
+
+    // Toast
+    toast && h("div", { style:{ position:"fixed", top:16, right:16, zIndex:1000, padding:"10px 16px", borderRadius:6, background: toast.type==="err"?"#2e0a0a": toast.type==="warn"?"#1a1600":"#0a2e1a", border:"1px solid "+(toast.type==="err"?"#991b1b":toast.type==="warn"?"#854d0e":"#166534"), color: toast.type==="err"?"#f87171":toast.type==="warn"?"#facc15":"#4ade80", fontSize:"12px", maxWidth:280 } }, toast.msg),
+
+    // Header
+    h("div", { style:{ borderBottom:"1px solid #1e293b", padding:"14px 20px", background:"#080c10", position:"sticky", top:0, zIndex:50, display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 } },
+      h("div", null,
+        h("div", { style:{ fontSize:"16px", fontWeight:700, color:"#f8fafc", letterSpacing:"-0.02em" } }, "⚾ MLB ", h("span", {style:{color:"#22c55e"}}, "TRACKER")),
+        h("div", { style:{ fontSize:"9px", color:"#475569", letterSpacing:"0.1em", marginTop:2 } }, "P&L EN PESOS COLOMBIANOS")
+      ),
+      h("div", { style:{ display:"flex", gap:4, flexWrap:"wrap" } },
+        NavBtn("DASHBOARD", "dashboard"),
+        NavBtn("APUESTAS", "bets", bets.length),
+        NavBtn("+ NUEVA", "add"),
+        NavBtn("⚙ CONFIG", "settings")
+      )
+    ),
+
+    // Body
+    h("div", { style:{ padding:"20px", maxWidth:900, margin:"0 auto" } },
+
+      // ── DASHBOARD ──────────────────────────────────────────────────────
+      view === "dashboard" && h(React.Fragment, null,
+
+        // KPIs
+        h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))", gap:10, marginBottom:20 } },
+          h(StatCard, { label:"P&L TOTAL", value:(stats.totalPL>=0?"+":"")+fmt(stats.totalPL), sub:"todas las apuestas", accent:stats.totalPL>0?"#166534":stats.totalPL<0?"#991b1b":undefined }),
+          h(StatCard, { label:"WIN RATE",  value:stats.winRate!=null?fmtPct(stats.winRate,0):"—", sub:stats.wins+"W – "+stats.losses+"L" }),
+          h(StatCard, { label:"ROI",       value:(stats.roi>=0?"+":"")+fmtPct(stats.roi), sub:fmt(stats.totalStaked)+" apost.", accent:stats.roi>0?"#166534":stats.roi<0?"#991b1b":undefined }),
+          h(StatCard, { label:"PENDIENTES",value:String(stats.pending), sub:"pot. "+fmt(stats.potentialReturn), accent:stats.pending>0?"#854d0e":undefined }),
+          h(StatCard, { label:"TOTAL BETS",value:String(bets.length),  sub:fmt(stats.totalStaked)+" en juego" }),
+        ),
+
+        // Tipster leaderboard
+        h("div", { style:{ marginBottom:20 } },
+          h("div", { style: S.secTitle }, h("span",{style:S.dot("#22c55e")}), "LEADERBOARD POR TIPSTER"),
+          stats.byTipster.length === 0
+            ? h("div", { style:{padding:"20px",color:"#334155",fontSize:"12px",textAlign:"center"} }, "Aún no hay apuestas. Usa el botón + NUEVA para empezar.")
+            : [...stats.byTipster].sort((a,b)=>b.pl-a.pl).map(t => {
+                const ts = TIPSTER_STYLE(t.name);
+                const wr = t.settled > 0 ? (t.wins/t.settled*100).toFixed(0) : "—";
+                return h("div", { key:t.name, style:{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:"#0d1117", border:"1px solid #1e293b", borderRadius:6, marginBottom:6, flexWrap:"wrap" } },
+                  h("span", { style:{ ...S.pill(ts.bg,ts.col,ts.bd), minWidth:110, textAlign:"center" } }, t.name),
+                  h("span", { style:{ flex:1 } }),
+                  h("span", { style:{ color:"#475569", fontSize:"11px" } }, t.wins+"W / "+t.losses+"L"),
+                  h("span", { style:{ color:"#475569", fontSize:"11px", marginLeft:12 } }, wr+"%"),
+                  h("span", { style:{ color:"#475569", fontSize:"10px", marginLeft:12 } }, fmt(t.staked)),
+                  h("span", { style:{ fontSize:"12px", fontWeight:700, color:t.pl>0?"#4ade80":t.pl<0?"#f87171":"#94a3b8", marginLeft:12 } }, (t.pl>=0?"+":"")+fmt(t.pl))
+                );
+              })
+        ),
+
+        // Recent bets
+        bets.length > 0 && h("div", null,
+          h("div", { style: S.secTitle }, h("span",{style:S.dot("#facc15")}), "APUESTAS RECIENTES"),
+          bets.slice(0,6).map(b => h(BetCard, { key:b.id, bet:b, unitSize, onResult:updateResult, onDelete:deleteBet, showDelete:false }))
+        )
+      ),
+
+      // ── BETS ──────────────────────────────────────────────────────────
+      view === "bets" && h(React.Fragment, null,
+
+        h("div", { style:{ display:"flex", gap:5, marginBottom:10, flexWrap:"wrap", alignItems:"center" } },
+          h("span", { style:{ fontSize:"10px", color:"#475569", marginRight:2 } }, "TIPSTER:"),
+          ["All",...tipsters].map(t => FilterChip(t, t, filter, setFilter))
+        ),
+        h("div", { style:{ display:"flex", gap:5, marginBottom:16, flexWrap:"wrap", alignItems:"center" } },
+          h("span", { style:{ fontSize:"10px", color:"#475569", marginRight:2 } }, "RESULTADO:"),
+          ["All","pending","win","loss","void"].map(r => FilterChip(r.toUpperCase(), r, filterResult, setFilterResult))
+        ),
+
+        filtered.length === 0
+          ? h("div", { style:{ padding:"40px 20px", color:"#334155", textAlign:"center", fontSize:"12px" } }, "No hay apuestas con este filtro.")
+          : sortedDates.map(date =>
+              h("div", { key:date },
+                h("div", { style:{ fontSize:"10px", color:"#475569", letterSpacing:"0.1em", marginBottom:8, marginTop:12, paddingBottom:6, borderBottom:"1px solid #1e293b" } },
+                  "📅 "+date+" — "+byDate[date].length+" apuesta"+(byDate[date].length>1?"s":"")+" · "+fmt(byDate[date].reduce((a,b)=>a+calcPL(b,b.result,unitSize),0))+" P&L"
+                ),
+                byDate[date].map(b => h(BetCard, { key:b.id, bet:b, unitSize, onResult:updateResult, onDelete:deleteBet, showDelete:true }))
+              )
+            )
+      ),
+
+      // ── ADD BET ───────────────────────────────────────────────────────
+      view === "add" && h("div", { style:{ maxWidth:540 } },
+        h("div", { style:{ ...S.secTitle, marginBottom:16 } }, h("span",{style:S.dot("#22c55e")}), "REGISTRAR APUESTA"),
+
+        h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 } },
+          h("div", null,
+            h("label", { style:S.lbl }, "Tipster"),
+            h("select", { value:form.tipster, onChange:e=>setForm({...form,tipster:e.target.value}), style:S.inp },
+              tipsters.map(t => h("option",{key:t,value:t},t))
+            )
+          ),
+          h("div", null,
+            h("label", { style:S.lbl }, "Fecha"),
+            h("input", { type:"date", value:form.date, onChange:e=>setForm({...form,date:e.target.value}), style:S.inp })
+          )
+        ),
+
+        h("div", { style:{ marginTop:12 } },
+          h("label", { style:S.lbl }, "Partido"),
+          h("input", { placeholder:"ej. MIN Twins @ KC Royals", value:form.game, onChange:e=>setForm({...form,game:e.target.value}), style:S.inp })
+        ),
+
+        h("div", { style:{ marginTop:12 } },
+          h("label", { style:S.lbl }, "Descripción de la apuesta"),
+          h("input", { placeholder:"ej. Twins ML / Pivetta Over 5.5 Ks", value:form.bet, onChange:e=>setForm({...form,bet:e.target.value}), style:S.inp })
+        ),
+
+        h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:12 } },
+          h("div", null,
+            h("label", { style:S.lbl }, "Cuota (decimal)"),
+            h("input", { type:"number", step:"0.01", min:"1.01", placeholder:"1.85", value:form.odds, onChange:e=>setForm({...form,odds:e.target.value}), style:S.inp })
+          ),
+          h("div", null,
+            h("label", { style:S.lbl }, "Monto en COP"),
+            h("input", { type:"number", step:"500", placeholder:fmt(unitSize), value:form.stakeOverride, onChange:e=>setForm({...form,stakeOverride:e.target.value}), style:S.inp })
+          )
+        ),
+
+        form.odds && +form.odds > 1 && h("div", { style:{ marginTop:8, padding:"9px 12px", background:"#0d2818", border:"1px solid #166534", borderRadius:5, fontSize:"11px", display:"flex", gap:20 } },
+          h("span", null, h("span",{style:{color:"#475569"}},"Stake: "), h("span",{style:{color:"#4ade80"}},fmt(form.stakeOverride?+form.stakeOverride:unitSize))),
+          h("span", null, h("span",{style:{color:"#475569"}},"Retorno: "), h("span",{style:{color:"#4ade80"}},"+"+fmt((form.stakeOverride?+form.stakeOverride:unitSize)*((+form.odds||1)-1))))
+        ),
+
+        h("div", { style:{ marginTop:12 } },
+          h("label", { style:S.lbl }, "Resultado"),
+          h("div", { style:{ display:"flex", gap:6, flexWrap:"wrap" } },
+            ["pending","win","loss","void"].map(r => {
+              const rc = RC[r]; const active = form.result===r;
+              return h("button", { key:r, onClick:()=>setForm({...form,result:r}),
+                style:{ padding:"6px 14px", borderRadius:4, fontSize:"11px", cursor:"pointer", border:"1px solid "+(active?rc.border:"#1e293b"), background:active?rc.bg:"transparent", color:active?rc.text:"#475569" }
+              }, r.toUpperCase());
+            })
+          )
+        ),
+
+        h("div", { style:{ marginTop:12 } },
+          h("label", { style:S.lbl }, "Notas"),
+          h("input", { placeholder:"Análisis, razonamiento...", value:form.notes, onChange:e=>setForm({...form,notes:e.target.value}), style:S.inp })
+        ),
+
+        h("div", { style:{ marginTop:10, display:"flex", alignItems:"center", gap:8 } },
+          h("input", { type:"checkbox", id:"parlay", checked:form.isParlay, onChange:e=>setForm({...form,isParlay:e.target.checked}) }),
+          h("label", { htmlFor:"parlay", style:{ fontSize:"11px", color:"#94a3b8", cursor:"pointer" } }, "Es una apuesta combinada / parlay")
+        ),
+
+        h("button", { onClick:addBet, style:{ ...S.btn("#166534","#4ade80","#22c55e"), width:"100%", padding:"11px", marginTop:14, fontSize:"13px", fontWeight:700, letterSpacing:"0.04em" } }, "+ REGISTRAR APUESTA")
+      ),
+
+      // ── SETTINGS ──────────────────────────────────────────────────────
+      view === "settings" && h("div", { style:{ maxWidth:500 } },
+        h("div", { style:{ ...S.secTitle, marginBottom:16 } }, h("span",{style:S.dot("#60a5fa")}), "CONFIGURACIÓN"),
+
+        // Unit size
+        h("div", { style:{ ...S.card(), marginBottom:16 } },
+          h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:10, fontWeight:600 } }, "Tamaño de unidad"),
+          h("div", { style:{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" } },
+            editUnit
+              ? h(React.Fragment, null,
+                  h("input", { value:unitInput, onChange:e=>setUnitInput(e.target.value), type:"number", step:"500", style:{ ...S.inp, width:130 } }),
+                  h("span", { style:{ color:"#475569", fontSize:"11px" } }, "COP"),
+                  h("button", { onClick:handleSaveUnit, style:S.btn("#166534","#4ade80","#22c55e") }, "GUARDAR"),
+                  h("button", { onClick:()=>setEditUnit(false), style:S.btn("transparent","#475569","#1e293b") }, "CANCELAR")
+                )
+              : h(React.Fragment, null,
+                  h("span", { style:{ fontSize:"18px", fontWeight:700, color:"#22c55e" } }, fmt(unitSize)),
+                  h("button", { onClick:()=>setEditUnit(true), style:S.btn("transparent","#94a3b8","#1e293b") }, "EDITAR")
+                )
+          ),
+          h("div", { style:{ fontSize:"10px", color:"#475569", marginTop:8 } }, "Si ingresas el monto en COP al añadir apuestas, las unidades se ignoran.")
+        ),
+
+        // Tipsters
+        h("div", { style: S.card() },
+          h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:10, fontWeight:600 } }, "Tipsters"),
+          h("div", { style:{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 } },
+            tipsters.map(t => { const ts = TIPSTER_STYLE(t); return h("span",{key:t,style:S.pill(ts.bg,ts.col,ts.bd)},t); })
+          ),
+          showAddTipster
+            ? h("div", { style:{ display:"flex", gap:8 } },
+                h("input", { placeholder:"Nombre del tipster...", value:newTipster, onChange:e=>setNewTipster(e.target.value), onKeyDown:e=>e.key==="Enter"&&handleAddTipster(), style:{ ...S.inp, flex:1 } }),
+                h("button", { onClick:handleAddTipster, style:S.btn("#166534","#4ade80","#22c55e") }, "AÑADIR"),
+                h("button", { onClick:()=>setShowAddTipster(false), style:S.btn("transparent","#475569","#1e293b") }, "✕")
+              )
+            : h("button", { onClick:()=>setShowAddTipster(true), style:S.btn("transparent","#94a3b8","#1e293b") }, "+ Añadir tipster"),
+
+          // Export / Import
+          h("div", { style:{ marginTop:16, paddingTop:14, borderTop:"1px solid #1e293b" } },
+            h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:8, fontWeight:600 } }, "Exportar / Importar datos"),
+            h("div", { style:{ display:"flex", gap:8 } },
+              h("button", {
+                onClick:() => {
+                  const data = JSON.stringify({ bets, unitSize, tipsters }, null, 2);
+                  const a = document.createElement("a");
+                  a.href = "data:application/json;charset=utf-8," + encodeURIComponent(data);
+                  a.download = "mlb-tracker-backup-"+today()+".json";
+                  a.click();
+                  showToast("Backup descargado ✓");
+                },
+                style: S.btn("transparent","#60a5fa","#1e3a5f")
+              }, "⬇ Exportar JSON"),
+              h("label", { style:{ ...S.btn("transparent","#a78bfa","#4c1d95"), cursor:"pointer" } },
+                "⬆ Importar JSON",
+                h("input", { type:"file", accept:".json", style:{ display:"none" }, onChange: e => {
+                  const file = e.target.files[0]; if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => {
+                    try {
+                      const d = JSON.parse(ev.target.result);
+                      if (d.bets) saveBets(d.bets);
+                      if (d.unitSize) { saveUnit(d.unitSize); setUnitInput(String(d.unitSize)); }
+                      if (d.tipsters) saveTipsters(d.tipsters);
+                      showToast("Datos importados ✓");
+                    } catch { showToast("Archivo inválido", "err"); }
+                  };
+                  reader.readAsText(file);
+                }})
+              )
+            )
+          ),
+
+          // Danger zone
+          h("div", { style:{ marginTop:16, paddingTop:14, borderTop:"1px solid #1e293b" } },
+            h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:8 } }, "Zona peligrosa"),
+            h("button", {
+              onClick:() => { if (confirm("¿Borrar TODAS las apuestas? Esto no se puede deshacer.")) { saveBets([]); showToast("Datos borrados","warn"); } },
+              style: S.btn("#2e0a0a","#f87171","#991b1b")
+            }, "🗑 Borrar todo")
+          )
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
