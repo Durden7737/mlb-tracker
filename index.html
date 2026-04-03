@@ -17,7 +17,6 @@
     ::-webkit-scrollbar-track { background: #080c10; }
     ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
     input:focus, select:focus, textarea:focus { outline: none; border-color: #22c55e !important; box-shadow: 0 0 0 2px rgba(34,197,94,0.1); }
-    @media (max-width: 600px) { .hide-mobile { display: none !important; } }
   </style>
 </head>
 <body>
@@ -26,13 +25,11 @@
 const { useState, useEffect, useCallback, useRef } = React;
 const h = React.createElement;
 
-// ── Storage (localStorage for standalone) ──────────────────────────────────
 const LS = {
   get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
-// ── Constants ──────────────────────────────────────────────────────────────
 const TIPSTERS_DEFAULT = ["Claude AI", "Own Analysis", "ChatGPT", "Gemini", "Grok", "Copilot"];
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -43,18 +40,26 @@ const RC = {
   pending: { bg:"#0f172a", text:"#94a3b8", border:"#334155", emoji:"⏳" },
 };
 
-const TIPSTER_STYLE = (t) => {
-  if (t === "Claude AI")     return { bg:"#0d1f3c", col:"#60a5fa", bd:"#1e3a5f" };
-  if (t === "Own Analysis")  return { bg:"#1a0d2e", col:"#c084fc", bd:"#4c1d95" };
-  if (t === "ChatGPT")       return { bg:"#0d2218", col:"#34d399", bd:"#065f46" };
-  if (t === "Gemini")        return { bg:"#1a0f00", col:"#fb923c", bd:"#7c2d12" };
-  if (t === "Grok")          return { bg:"#0f0f1a", col:"#a78bfa", bd:"#3730a3" };
-  if (t === "Copilot")       return { bg:"#001a2e", col:"#38bdf8", bd:"#075985" };
-  return { bg:"#0f172a", col:"#94a3b8", bd:"#334155" };
+const TIPSTER_COLORS = [
+  { bg:"#0d1f3c", col:"#60a5fa", bd:"#1e3a5f" },
+  { bg:"#1a0d2e", col:"#c084fc", bd:"#4c1d95" },
+  { bg:"#0d2218", col:"#34d399", bd:"#065f46" },
+  { bg:"#1a0f00", col:"#fb923c", bd:"#7c2d12" },
+  { bg:"#0f0f1a", col:"#a78bfa", bd:"#3730a3" },
+  { bg:"#001a2e", col:"#38bdf8", bd:"#075985" },
+  { bg:"#1a1200", col:"#fbbf24", bd:"#92400e" },
+  { bg:"#1a000d", col:"#fb7185", bd:"#9f1239" },
+  { bg:"#0a1a0a", col:"#86efac", bd:"#14532d" },
+  { bg:"#1a1a00", col:"#fde68a", bd:"#92400e" },
+];
+
+const TIPSTER_STYLE = (name, tipsters) => {
+  const idx = tipsters.indexOf(name);
+  return TIPSTER_COLORS[idx % TIPSTER_COLORS.length] || TIPSTER_COLORS[0];
 };
 
 const fmt = (n) => new Intl.NumberFormat("es-CO", { style:"currency", currency:"COP", maximumFractionDigits:0 }).format(n);
-const fmtPct = (n, d) => n.toFixed(d ?? 1) + "%";
+const fmtPct = (n, d=1) => isNaN(n) ? "—" : n.toFixed(d) + "%";
 const genId = () => Math.random().toString(36).slice(2, 10);
 
 function getStake(bet, unitSize) {
@@ -62,134 +67,177 @@ function getStake(bet, unitSize) {
 }
 
 function calcPL(bet, result, unitSize) {
+  if (!bet.taken) return 0; // not-taken bets don't affect P&L
   const stake = getStake(bet, unitSize);
   if (result === "win")  return Math.round(stake * (bet.odds - 1));
   if (result === "loss") return -stake;
   return 0;
 }
 
-// ── Shared styles factory ─────────────────────────────────────────────────
 const S = {
   pill: (bg, col, bd) => ({ fontSize:"10px", padding:"2px 8px", borderRadius:3, background:bg, color:col, border:"1px solid "+bd, whiteSpace:"nowrap", display:"inline-block" }),
   inp:  { background:"#0d1117", border:"1px solid #1e293b", borderRadius:5, padding:"8px 12px", color:"#e2e8f0", width:"100%", boxSizing:"border-box", fontSize:"13px" },
   lbl:  { fontSize:"9px", color:"#475569", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, display:"block" },
-  card: (borderCol) => ({ background:"#0d1117", border:"1px solid "+(borderCol||"#1e293b"), borderRadius:8, padding:"12px 14px" }),
+  card: (bc) => ({ background:"#0d1117", border:"1px solid "+(bc||"#1e293b"), borderRadius:8, padding:"12px 14px" }),
   btn:  (bg, col, bd) => ({ background:bg, border:"1px solid "+bd, color:col, padding:"6px 14px", borderRadius:5, cursor:"pointer", fontSize:"11px", fontFamily:"inherit", letterSpacing:"0.04em" }),
   secTitle: { fontSize:"10px", color:"#475569", letterSpacing:"0.12em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, marginBottom:10 },
   dot: (c) => ({ width:7, height:7, borderRadius:"50%", background:c, display:"inline-block", flexShrink:0 }),
 };
 
-// ── BetCard component ─────────────────────────────────────────────────────
-function BetCard({ bet, unitSize, onResult, onDelete, showDelete }) {
+// Toggle switch component
+function Toggle({ checked, onChange, label, color="#22c55e" }) {
+  return h("label", { style:{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", userSelect:"none" } },
+    h("div", {
+      onClick: onChange,
+      style: {
+        width:36, height:20, borderRadius:10, position:"relative", cursor:"pointer", flexShrink:0,
+        background: checked ? color : "#1e293b",
+        border: "1px solid " + (checked ? color : "#334155"),
+        transition: "background 0.2s",
+      }
+    },
+      h("div", { style: {
+        position:"absolute", top:2, left: checked ? 16 : 2,
+        width:14, height:14, borderRadius:"50%", background:"#fff",
+        transition:"left 0.2s",
+      }})
+    ),
+    label && h("span", { style:{ fontSize:"11px", color: checked ? "#e2e8f0" : "#475569" } }, label)
+  );
+}
+
+function BetCard({ bet, unitSize, tipsters, onResult, onDelete, onToggleTaken, showDelete }) {
   const c   = RC[bet.result];
-  const ts  = TIPSTER_STYLE(bet.tipster);
+  const ts  = TIPSTER_STYLE(bet.tipster, tipsters);
   const pl  = calcPL(bet, bet.result, unitSize);
   const stake = getStake(bet, unitSize);
+  const taken = bet.taken !== false; // default true for old bets
 
-  return h("div", { style: { ...S.card(), borderLeft:"3px solid "+c.border, marginBottom:8 } },
-    h("div", { style: { display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", marginBottom:6 } },
-      h("div", { style: { flex:1, minWidth:0 } },
-        h("div", { style: { fontSize:"10px", color:"#475569", marginBottom:2 } }, bet.date+" · "+bet.game),
-        h("div", { style: { fontSize:"13px", fontWeight:600, color:"#f8fafc", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" } },
+  return h("div", { style: {
+    background:"#0d1117",
+    border:"1px solid " + (taken ? c.border : "#1e293b"),
+    borderLeft:"3px solid " + (taken ? c.border : "#334155"),
+    borderRadius:8, padding:"12px 14px", marginBottom:8,
+    opacity: taken ? 1 : 0.75,
+  }},
+    // Top row
+    h("div", { style:{ display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", marginBottom:6 } },
+      h("div", { style:{ flex:1, minWidth:0 } },
+        h("div", { style:{ fontSize:"10px", color:"#475569", marginBottom:2 } }, bet.date + " · " + bet.game),
+        h("div", { style:{ fontSize:"13px", fontWeight:600, color:"#f8fafc", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" } },
           bet.isParlay && h("span", { style: S.pill("#2d1b00","#facc15","#854d0e") }, "PARLAY"),
+          !taken && h("span", { style: S.pill("#0f172a","#64748b","#334155") }, "NO JUGADA"),
           bet.bet
         ),
-        bet.notes && h("div", { style: { fontSize:"10px", color:"#475569", marginTop:3 } }, bet.notes)
+        bet.notes && h("div", { style:{ fontSize:"10px", color:"#475569", marginTop:3 } }, bet.notes)
       ),
-      h("div", { style: { textAlign:"right", flexShrink:0 } },
-        h("div", { style: { fontSize:"13px", fontWeight:700, color: pl > 0 ? "#4ade80" : pl < 0 ? "#f87171" : "#94a3b8" } },
-          bet.result === "pending" ? "⏳ PENDIENTE" : (pl >= 0 ? "+" : "") + fmt(pl)
-        ),
-        h("div", { style: { fontSize:"10px", color:"#475569", marginTop:2 } }, fmt(stake)+" apost.")
+      h("div", { style:{ textAlign:"right", flexShrink:0 } },
+        taken
+          ? h("div", { style:{ fontSize:"13px", fontWeight:700, color: pl > 0 ? "#4ade80" : pl < 0 ? "#f87171" : "#94a3b8" } },
+              bet.result === "pending" ? "⏳" : (pl >= 0 ? "+" : "") + fmt(pl)
+            )
+          : h("div", { style:{ fontSize:"11px", color:"#475569" } }, "solo seguimiento"),
+        taken && bet.result !== "pending" &&
+          h("div", { style:{ fontSize:"10px", color:"#475569", marginTop:2 } }, fmt(stake) + " apost."),
       )
     ),
-    h("div", { style: { display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:6 } },
-      h("div", { style: { display:"flex", gap:5, flexWrap:"wrap" } },
+
+    // Bottom row
+    h("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:6 } },
+      h("div", { style:{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" } },
         h("span", { style: S.pill("#0f172a","#94a3b8","#1e293b") }, bet.odds.toFixed(2)+"x"),
+        taken && h("span", { style: S.pill("#0f172a","#64748b","#1e293b") }, fmt(stake)),
         h("span", { style: S.pill(ts.bg, ts.col, ts.bd) }, bet.tipster),
         h("span", { style: S.pill(c.bg, c.text, c.border) }, bet.result.toUpperCase()),
       ),
-      h("div", { style: { display:"flex", gap:3, alignItems:"center" } },
-        ["pending","win","loss","void"].map(r => {
-          const rc = RC[r];
-          const active = bet.result === r;
-          return h("button", {
-            key: r, title: r,
-            onClick: () => onResult(bet.id, r),
-            style: { padding:"3px 9px", borderRadius:3, fontSize:"11px", cursor:"pointer", border:"1px solid "+(active?rc.border:"#1e293b"), background:active?rc.bg:"transparent", color:active?rc.text:"#475569" }
-          }, rc.emoji);
-        }),
-        showDelete && h("button", { onClick: () => onDelete(bet.id), title:"Eliminar", style: { ...S.btn("transparent","#ef4444","#7f1d1d"), padding:"3px 8px", marginLeft:4 } }, "🗑")
+      h("div", { style:{ display:"flex", gap:4, alignItems:"center", flexWrap:"wrap" } },
+        // Taken toggle
+        h(Toggle, { checked:taken, onChange:()=>onToggleTaken(bet.id), color:"#22c55e",
+          label: taken ? "Jugada" : "No jugada" }),
+        // Result buttons
+        h("div", { style:{ display:"flex", gap:2, marginLeft:6 } },
+          ["pending","win","loss","void"].map(r => {
+            const rc = RC[r]; const active = bet.result === r;
+            return h("button", { key:r, title:r, onClick:()=>onResult(bet.id,r),
+              style:{ padding:"3px 8px", borderRadius:3, fontSize:"11px", cursor:"pointer",
+                border:"1px solid "+(active?rc.border:"#1e293b"),
+                background:active?rc.bg:"transparent", color:active?rc.text:"#475569" }
+            }, rc.emoji);
+          })
+        ),
+        showDelete && h("button", { onClick:()=>onDelete(bet.id), title:"Eliminar",
+          style:{ ...S.btn("transparent","#ef4444","#7f1d1d"), padding:"3px 8px", marginLeft:2 }
+        }, "🗑")
       )
     )
   );
 }
 
-// ── StatCard ───────────────────────────────────────────────────────────────
-function StatCard({ label, value, sub, accent }) {
-  return h("div", { style: { ...S.card(accent), padding:"12px 14px" } },
-    h("div", { style: { fontSize:"9px", color:"#475569", letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:5 } }, label),
-    h("div", { style: { fontSize:"20px", fontWeight:700, color: accent ? (accent === "#166534" ? "#4ade80" : accent === "#991b1b" ? "#f87171" : "#facc15") : "#f8fafc", lineHeight:1.2 } }, value),
-    h("div", { style: { fontSize:"10px", color:"#475569", marginTop:3 } }, sub)
+function StatCard({ label, value, sub, accent, small }) {
+  const col = accent === "green" ? "#4ade80" : accent === "red" ? "#f87171" : accent === "yellow" ? "#facc15" : "#f8fafc";
+  const bd  = accent === "green" ? "#166534" : accent === "red" ? "#991b1b" : accent === "yellow" ? "#854d0e" : "#1e293b";
+  return h("div", { style:{ ...S.card(bd), padding:"12px 14px" } },
+    h("div", { style:{ fontSize:"9px", color:"#475569", letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:5 } }, label),
+    h("div", { style:{ fontSize: small?"15px":"20px", fontWeight:700, color:col, lineHeight:1.2 } }, value),
+    h("div", { style:{ fontSize:"10px", color:"#475569", marginTop:3 } }, sub)
   );
 }
 
-// ── Main App ───────────────────────────────────────────────────────────────
 function App() {
-  const [bets, setBets]         = useState([]);
-  const [unitSize, setUnitSize] = useState(5000);
-  const [tipsters, setTipsters] = useState(TIPSTERS_DEFAULT);
-  const [view, setView]         = useState("dashboard");
-  const [filter, setFilter]     = useState("All");
+  const [bets, setBets]           = useState([]);
+  const [unitSize, setUnitSize]   = useState(5000);
+  const [tipsters, setTipsters]   = useState(TIPSTERS_DEFAULT);
+  const [view, setView]           = useState("dashboard");
+  const [filter, setFilter]       = useState("All");
   const [filterResult, setFilterResult] = useState("All");
-  const [editUnit, setEditUnit] = useState(false);
+  const [filterTaken, setFilterTaken]   = useState("All"); // All / taken / not-taken
+  const [editUnit, setEditUnit]   = useState(false);
   const [unitInput, setUnitInput] = useState("5000");
-  const [showAddTipster, setShowAddTipster] = useState(false);
   const [newTipster, setNewTipster] = useState("");
-  const [loaded, setLoaded]     = useState(false);
-  const [toast, setToast]       = useState(null);
-  const toastTimer              = useRef(null);
+  const [loaded, setLoaded]       = useState(false);
+  const [toast, setToast]         = useState(null);
+  const toastTimer                = useRef(null);
+  const [leaderTab, setLeaderTab] = useState("pl"); // pl | accuracy
 
-  const [form, setForm] = useState({
-    tipster:"Claude AI", game:"", bet:"", odds:"", units:"1",
-    stakeOverride:"", result:"pending", notes:"", date:today(), isParlay:false
+  const emptyForm = () => ({
+    tipster: tipsters[0] || "Claude AI",
+    game:"", bet:"", odds:"", units:"1",
+    stakeOverride:"", result:"pending",
+    notes:"", date:today(),
+    isParlay:false, taken:true,
   });
+  const [form, setForm] = useState(emptyForm());
 
-  // Load from localStorage
   useEffect(() => {
     const b = LS.get("mlbt_bets");
     const u = LS.get("mlbt_unit");
     const t = LS.get("mlbt_tipsters");
-    if (b) setBets(b);
+    if (b) setBets(b.map(x => ({ taken:true, ...x }))); // default taken=true for legacy
     if (u) { setUnitSize(u); setUnitInput(String(u)); }
     if (t) setTipsters(t);
     setLoaded(true);
   }, []);
 
-  const showToast = (msg, type = "ok") => {
+  const showToast = (msg, type="ok") => {
     setToast({ msg, type });
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2800);
   };
 
-  const saveBets = (b) => { setBets(b); LS.set("mlbt_bets", b); };
-  const saveUnit = (u) => { setUnitSize(u); LS.set("mlbt_unit", u); };
+  const saveBets     = (b) => { setBets(b); LS.set("mlbt_bets", b); };
+  const saveUnit     = (u) => { setUnitSize(u); LS.set("mlbt_unit", u); };
   const saveTipsters = (t) => { setTipsters(t); LS.set("mlbt_tipsters", t); };
 
-  const updateResult = useCallback((id, result) => {
-    saveBets(bets.map(b => b.id === id ? { ...b, result } : b));
-  }, [bets]);
-
-  const deleteBet = useCallback((id) => {
-    saveBets(bets.filter(b => b.id !== id));
-    showToast("Apuesta eliminada", "warn");
-  }, [bets]);
+  const updateResult     = (id, result) => saveBets(bets.map(b => b.id===id ? {...b,result} : b));
+  const toggleTaken      = (id) => saveBets(bets.map(b => b.id===id ? {...b, taken:!(b.taken!==false)} : b));
+  const deleteBet        = (id) => { saveBets(bets.filter(b => b.id!==id)); showToast("Apuesta eliminada","warn"); };
 
   const addBet = () => {
-    if (!form.game || !form.bet || !form.odds) { showToast("Completa partido, apuesta y cuota", "err"); return; }
-    const nb = { ...form, id:genId(), odds:+form.odds, units:+form.units, stakeOverride: form.stakeOverride ? +form.stakeOverride : null };
+    if (!form.game || !form.bet || !form.odds) { showToast("Completa partido, apuesta y cuota","err"); return; }
+    const nb = { ...form, id:genId(), odds:+form.odds, units:+form.units,
+      stakeOverride: form.stakeOverride ? +form.stakeOverride : null };
     saveBets([nb, ...bets]);
-    setForm({ tipster:form.tipster, game:"", bet:"", odds:"", units:"1", stakeOverride:"", result:"pending", notes:"", date:today(), isParlay:false });
+    setForm(emptyForm());
     showToast("Apuesta registrada ✓");
     setView("bets");
   };
@@ -202,291 +250,417 @@ function App() {
 
   const handleAddTipster = () => {
     if (!newTipster.trim()) return;
-    if (tipsters.includes(newTipster.trim())) { showToast("Tipster ya existe", "err"); return; }
-    saveTipsters([...tipsters, newTipster.trim()]);
-    setNewTipster(""); setShowAddTipster(false);
-    showToast("Tipster añadido");
+    if (tipsters.includes(newTipster.trim())) { showToast("Tipster ya existe","err"); return; }
+    const updated = [...tipsters, newTipster.trim()];
+    saveTipsters(updated);
+    setForm(f => ({ ...f, tipster: f.tipster }));
+    setNewTipster("");
+    showToast("Tipster añadido ✓");
   };
 
-  // ── Stats ────────────────────────────────────────────────────────────────
-  const stats = (() => {
-    const settled  = bets.filter(b => b.result !== "pending" && b.result !== "void");
-    const wins     = settled.filter(b => b.result === "win");
-    const losses   = settled.filter(b => b.result === "loss");
-    const totalPL  = bets.reduce((a, b) => a + calcPL(b, b.result, unitSize), 0);
-    const totalStaked = bets.reduce((a, b) => a + getStake(b, unitSize), 0);
-    const settledStaked = settled.reduce((a, b) => a + getStake(b, unitSize), 0);
-    const roi      = settledStaked > 0 ? (totalPL / settledStaked * 100) : 0;
-    const winRate  = settled.length > 0 ? wins.length / settled.length * 100 : null;
-    const pending  = bets.filter(b => b.result === "pending");
-    const potentialReturn = pending.reduce((a, b) => a + getStake(b, unitSize) * b.odds, 0);
+  const removeTipster = (name) => {
+    if (bets.some(b => b.tipster === name)) { showToast("No se puede eliminar: tiene apuestas asociadas","err"); return; }
+    saveTipsters(tipsters.filter(t => t !== name));
+    showToast("Tipster eliminado");
+  };
 
+  // ── Stats ──────────────────────────────────────────────────────────────
+  const stats = (() => {
+    const takenBets    = bets.filter(b => b.taken !== false);
+    const notTaken     = bets.filter(b => b.taken === false);
+    const allSettled   = bets.filter(b => b.result !== "pending" && b.result !== "void");
+    const takenSettled = takenBets.filter(b => b.result !== "pending" && b.result !== "void");
+    const takenWins    = takenSettled.filter(b => b.result === "win");
+    const allWins      = allSettled.filter(b => b.result === "win");
+
+    const totalPL      = bets.reduce((a,b) => a + calcPL(b, b.result, unitSize), 0);
+    const takenStaked  = takenSettled.reduce((a,b) => a + getStake(b,unitSize), 0);
+    const roi          = takenStaked > 0 ? (totalPL / takenStaked * 100) : 0;
+    const pending      = bets.filter(b => b.result === "pending");
+    const potRet       = pending.filter(b=>b.taken!==false).reduce((a,b) => a + getStake(b,unitSize)*b.odds, 0);
+
+    // Per tipster
     const byTipster = tipsters.map(t => {
-      const tb = bets.filter(b => b.tipster === t);
+      const tb  = bets.filter(b => b.tipster === t);
       if (!tb.length) return null;
-      const ts = tb.filter(b => b.result !== "pending" && b.result !== "void");
-      const tw = ts.filter(b => b.result === "win");
-      const tpl = tb.reduce((a, b) => a + calcPL(b, b.result, unitSize), 0);
-      const tstaked = tb.reduce((a, b) => a + getStake(b, unitSize), 0);
-      return { name:t, total:tb.length, wins:tw.length, losses:ts.length-tw.length, settled:ts.length, pl:tpl, staked:tstaked };
+      const taken    = tb.filter(b => b.taken !== false);
+      const allS     = tb.filter(b => b.result !== "pending" && b.result !== "void");
+      const takenS   = taken.filter(b => b.result !== "pending" && b.result !== "void");
+      const allW     = allS.filter(b => b.result === "win");
+      const takenW   = takenS.filter(b => b.result === "win");
+      const tpl      = taken.reduce((a,b) => a + calcPL(b, b.result, unitSize), 0);
+      const tstaked  = takenS.reduce((a,b) => a + getStake(b,unitSize), 0);
+      const troi     = tstaked > 0 ? (tpl / tstaked * 100) : 0;
+      return {
+        name:t,
+        total:tb.length, takenTotal:taken.length, notTaken:tb.length-taken.length,
+        allWins:allW.length, allSettled:allS.length,
+        takenWins:takenW.length, takenSettled:takenS.length,
+        pl:tpl, staked:tstaked, roi:troi,
+        accuracy: allS.length > 0 ? allW.length/allS.length*100 : null,
+        takenWR:  takenS.length > 0 ? takenW.length/takenS.length*100 : null,
+      };
     }).filter(Boolean);
 
-    return { wins:wins.length, losses:losses.length, settled:settled.length, pending:pending.length, totalPL, totalStaked, roi, winRate, byTipster, potentialReturn };
+    return {
+      totalPL, roi,
+      takenWins: takenWins.length, takenLosses: takenSettled.length - takenWins.length,
+      allWins: allWins.length, allSettled: allSettled.length,
+      takenSettled: takenSettled.length,
+      accuracy: allSettled.length > 0 ? allWins.length/allSettled.length*100 : null,
+      takenWR: takenSettled.length > 0 ? takenWins.length/takenSettled.length*100 : null,
+      pending: pending.length, potRet,
+      totalBets: bets.length, takenBets: takenBets.length, notTaken: notTaken.length,
+      takenStaked,
+      byTipster,
+    };
   })();
 
-  const filtered = bets.filter(b => (filter==="All"||b.tipster===filter) && (filterResult==="All"||b.result===filterResult));
+  // ── Filter bets ────────────────────────────────────────────────────────
+  const filtered = bets.filter(b => {
+    const tMatch = filter === "All" || b.tipster === filter;
+    const rMatch = filterResult === "All" || b.result === filterResult;
+    const kMatch = filterTaken === "All" || (filterTaken === "taken" ? b.taken !== false : b.taken === false);
+    return tMatch && rMatch && kMatch;
+  });
 
-  // Group bets by date for timeline
-  const byDate = filtered.reduce((acc, b) => { (acc[b.date] = acc[b.date]||[]).push(b); return acc; }, {});
+  const byDate = filtered.reduce((acc,b) => { (acc[b.date]=acc[b.date]||[]).push(b); return acc; }, {});
   const sortedDates = Object.keys(byDate).sort((a,b) => b.localeCompare(a));
 
-  if (!loaded) return h("div", { style:{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#080c10" } },
-    h("span", { style:{color:"#22c55e", fontSize:"14px"} }, "Cargando...")
+  if (!loaded) return h("div", { style:{ display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#080c10" } },
+    h("span",{style:{color:"#22c55e",fontSize:"14px"}},"Cargando...")
   );
 
-  // ── Layout pieces ─────────────────────────────────────────────────────
+  // ── UI helpers ─────────────────────────────────────────────────────────
   const NavBtn = (label, v, count) => h("button", {
-    key: v, onClick: () => setView(v),
-    style: { padding:"6px 14px", borderRadius:5, border:"1px solid "+(view===v?"#22c55e":"#1e293b"), background:view===v?"#0d2818":"transparent", color:view===v?"#22c55e":"#64748b", cursor:"pointer", fontSize:"11px", letterSpacing:"0.06em" }
+    key:v, onClick:()=>setView(v),
+    style:{ padding:"6px 14px", borderRadius:5, border:"1px solid "+(view===v?"#22c55e":"#1e293b"),
+      background:view===v?"#0d2818":"transparent", color:view===v?"#22c55e":"#64748b",
+      cursor:"pointer", fontSize:"11px", letterSpacing:"0.06em" }
   }, label + (count != null ? ` (${count})` : ""));
 
-  const FilterChip = (label, val, current, setter) => h("button", {
-    key: val, onClick: () => setter(val),
-    style: { padding:"3px 10px", borderRadius:20, border:"1px solid "+(current===val?"#22c55e":"#1e293b"), background:current===val?"#0d2818":"transparent", color:current===val?"#4ade80":"#475569", cursor:"pointer", fontSize:"10px" }
+  const Chip = (label, val, cur, setter) => h("button", { key:val, onClick:()=>setter(val),
+    style:{ padding:"3px 10px", borderRadius:20, border:"1px solid "+(cur===val?"#22c55e":"#1e293b"),
+      background:cur===val?"#0d2818":"transparent", color:cur===val?"#4ade80":"#475569",
+      cursor:"pointer", fontSize:"10px" }
+  }, label);
+
+  const TabBtn = (label, val) => h("button", { onClick:()=>setLeaderTab(val),
+    style:{ padding:"4px 12px", borderRadius:4, border:"1px solid "+(leaderTab===val?"#22c55e":"#1e293b"),
+      background:leaderTab===val?"#0d2818":"transparent", color:leaderTab===val?"#4ade80":"#64748b",
+      cursor:"pointer", fontSize:"10px", fontFamily:"inherit" }
   }, label);
 
   return h("div", { style:{ minHeight:"100vh", background:"#080c10", color:"#e2e8f0" } },
 
     // Toast
-    toast && h("div", { style:{ position:"fixed", top:16, right:16, zIndex:1000, padding:"10px 16px", borderRadius:6, background: toast.type==="err"?"#2e0a0a": toast.type==="warn"?"#1a1600":"#0a2e1a", border:"1px solid "+(toast.type==="err"?"#991b1b":toast.type==="warn"?"#854d0e":"#166534"), color: toast.type==="err"?"#f87171":toast.type==="warn"?"#facc15":"#4ade80", fontSize:"12px", maxWidth:280 } }, toast.msg),
+    toast && h("div", { style:{ position:"fixed",top:16,right:16,zIndex:1000,padding:"10px 16px",borderRadius:6,
+      background:toast.type==="err"?"#2e0a0a":toast.type==="warn"?"#1a1600":"#0a2e1a",
+      border:"1px solid "+(toast.type==="err"?"#991b1b":toast.type==="warn"?"#854d0e":"#166534"),
+      color:toast.type==="err"?"#f87171":toast.type==="warn"?"#facc15":"#4ade80",
+      fontSize:"12px", maxWidth:300, zIndex:9999 } }, toast.msg),
 
     // Header
-    h("div", { style:{ borderBottom:"1px solid #1e293b", padding:"14px 20px", background:"#080c10", position:"sticky", top:0, zIndex:50, display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 } },
+    h("div", { style:{ borderBottom:"1px solid #1e293b",padding:"14px 20px",background:"#080c10",
+      position:"sticky",top:0,zIndex:50,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8 } },
       h("div", null,
-        h("div", { style:{ fontSize:"16px", fontWeight:700, color:"#f8fafc", letterSpacing:"-0.02em" } }, "⚾ MLB ", h("span", {style:{color:"#22c55e"}}, "TRACKER")),
-        h("div", { style:{ fontSize:"9px", color:"#475569", letterSpacing:"0.1em", marginTop:2 } }, "P&L EN PESOS COLOMBIANOS")
+        h("div",{style:{fontSize:"16px",fontWeight:700,color:"#f8fafc",letterSpacing:"-0.02em"}},
+          "⚾ MLB ", h("span",{style:{color:"#22c55e"}},"TRACKER")),
+        h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginTop:2}},"P&L EN PESOS COLOMBIANOS")
       ),
-      h("div", { style:{ display:"flex", gap:4, flexWrap:"wrap" } },
-        NavBtn("DASHBOARD", "dashboard"),
-        NavBtn("APUESTAS", "bets", bets.length),
-        NavBtn("+ NUEVA", "add"),
-        NavBtn("⚙ CONFIG", "settings")
+      h("div",{style:{display:"flex",gap:4,flexWrap:"wrap"}},
+        NavBtn("DASHBOARD","dashboard"),
+        NavBtn("APUESTAS","bets",bets.length),
+        NavBtn("+ NUEVA","add"),
+        NavBtn("⚙ CONFIG","settings")
       )
     ),
 
-    // Body
-    h("div", { style:{ padding:"20px", maxWidth:900, margin:"0 auto" } },
+    h("div",{style:{padding:"20px",maxWidth:960,margin:"0 auto"}},
 
-      // ── DASHBOARD ──────────────────────────────────────────────────────
-      view === "dashboard" && h(React.Fragment, null,
+      // ── DASHBOARD ────────────────────────────────────────────────────
+      view==="dashboard" && h(React.Fragment, null,
 
-        // KPIs
-        h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))", gap:10, marginBottom:20 } },
-          h(StatCard, { label:"P&L TOTAL", value:(stats.totalPL>=0?"+":"")+fmt(stats.totalPL), sub:"todas las apuestas", accent:stats.totalPL>0?"#166534":stats.totalPL<0?"#991b1b":undefined }),
-          h(StatCard, { label:"WIN RATE",  value:stats.winRate!=null?fmtPct(stats.winRate,0):"—", sub:stats.wins+"W – "+stats.losses+"L" }),
-          h(StatCard, { label:"ROI",       value:(stats.roi>=0?"+":"")+fmtPct(stats.roi), sub:fmt(stats.totalStaked)+" apost.", accent:stats.roi>0?"#166534":stats.roi<0?"#991b1b":undefined }),
-          h(StatCard, { label:"PENDIENTES",value:String(stats.pending), sub:"pot. "+fmt(stats.potentialReturn), accent:stats.pending>0?"#854d0e":undefined }),
-          h(StatCard, { label:"TOTAL BETS",value:String(bets.length),  sub:fmt(stats.totalStaked)+" en juego" }),
+        // KPI row 1 — Financial (taken bets only)
+        h("div",{style:{marginBottom:6}},
+          h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginBottom:6,display:"flex",alignItems:"center",gap:6}},
+            h("span",{style:S.dot("#22c55e")}), "FINANCIERO — solo apuestas jugadas"
+          )
+        ),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:16}},
+          h(StatCard,{label:"P&L TOTAL", value:(stats.totalPL>=0?"+":"")+fmt(stats.totalPL), sub:fmt(stats.takenStaked)+" apost.", accent:stats.totalPL>0?"green":stats.totalPL<0?"red":undefined}),
+          h(StatCard,{label:"ROI", value:(stats.roi>=0?"+":"")+fmtPct(stats.roi), sub:stats.takenSettled+" cerradas", accent:stats.roi>0?"green":stats.roi<0?"red":undefined}),
+          h(StatCard,{label:"WIN RATE (jugadas)", value:stats.takenWR!=null?fmtPct(stats.takenWR,0):"—", sub:stats.takenWins+"W – "+stats.takenLosses+"L"}),
+          h(StatCard,{label:"PENDIENTES", value:String(stats.pending), sub:"pot. "+fmt(stats.potRet), accent:stats.pending>0?"yellow":undefined}),
         ),
 
-        // Tipster leaderboard
-        h("div", { style:{ marginBottom:20 } },
-          h("div", { style: S.secTitle }, h("span",{style:S.dot("#22c55e")}), "LEADERBOARD POR TIPSTER"),
-          stats.byTipster.length === 0
-            ? h("div", { style:{padding:"20px",color:"#334155",fontSize:"12px",textAlign:"center"} }, "Aún no hay apuestas. Usa el botón + NUEVA para empezar.")
-            : [...stats.byTipster].sort((a,b)=>b.pl-a.pl).map(t => {
-                const ts = TIPSTER_STYLE(t.name);
-                const wr = t.settled > 0 ? (t.wins/t.settled*100).toFixed(0) : "—";
-                return h("div", { key:t.name, style:{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:"#0d1117", border:"1px solid #1e293b", borderRadius:6, marginBottom:6, flexWrap:"wrap" } },
-                  h("span", { style:{ ...S.pill(ts.bg,ts.col,ts.bd), minWidth:110, textAlign:"center" } }, t.name),
-                  h("span", { style:{ flex:1 } }),
-                  h("span", { style:{ color:"#475569", fontSize:"11px" } }, t.wins+"W / "+t.losses+"L"),
-                  h("span", { style:{ color:"#475569", fontSize:"11px", marginLeft:12 } }, wr+"%"),
-                  h("span", { style:{ color:"#475569", fontSize:"10px", marginLeft:12 } }, fmt(t.staked)),
-                  h("span", { style:{ fontSize:"12px", fontWeight:700, color:t.pl>0?"#4ade80":t.pl<0?"#f87171":"#94a3b8", marginLeft:12 } }, (t.pl>=0?"+":"")+fmt(t.pl))
-                );
-              })
+        // KPI row 2 — Prediction accuracy (all bets)
+        h("div",{style:{marginBottom:6}},
+          h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginBottom:6,display:"flex",alignItems:"center",gap:6}},
+            h("span",{style:S.dot("#a78bfa")}), "PRECISIÓN — todas las apuestas (jugadas + no jugadas)"
+          )
+        ),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:20}},
+          h(StatCard,{label:"ACIERTO TOTAL", value:stats.accuracy!=null?fmtPct(stats.accuracy,0):"—", sub:stats.allWins+"/"+stats.allSettled+" acertadas"}),
+          h(StatCard,{label:"TOTAL PICKS", value:String(stats.totalBets), sub:stats.takenBets+" jugadas · "+stats.notTaken+" seguimiento"}),
+        ),
+
+        // Leaderboard
+        h("div",{style:{marginBottom:20}},
+          h("div",{style:{...S.secTitle,justifyContent:"space-between",flexWrap:"wrap",gap:8}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:6}},
+              h("span",{style:S.dot("#22c55e")}), "LEADERBOARD"
+            ),
+            h("div",{style:{display:"flex",gap:4}},
+              TabBtn("P&L","pl"),
+              TabBtn("Precisión","accuracy"),
+            )
+          ),
+
+          // Table header
+          h("div",{style:{display:"grid",gridTemplateColumns:"1.5fr 0.7fr 0.7fr 0.7fr 0.7fr 0.7fr",gap:4,padding:"6px 12px",marginBottom:4}},
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em"}},"TIPSTER"),
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em",textAlign:"center"}},"PICKS"),
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em",textAlign:"center"}},"JUGADAS"),
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em",textAlign:"center"}},"ACIERTO"),
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em",textAlign:"center"}},"W RATE"),
+            h("span",{style:{fontSize:"9px",color:"#334155",letterSpacing:"0.08em",textAlign:"right"}},
+              leaderTab==="pl" ? "P&L" : "ROI")
+          ),
+
+          stats.byTipster.length===0
+            ? h("div",{style:{padding:"24px",color:"#334155",fontSize:"12px",textAlign:"center"}},"Aún no hay apuestas.")
+            : [...stats.byTipster]
+                .sort((a,b) => leaderTab==="pl" ? b.pl-a.pl : (b.accuracy||0)-(a.accuracy||0))
+                .map(t => {
+                  const ts = TIPSTER_STYLE(t.name, tipsters);
+                  return h("div",{key:t.name,style:{display:"grid",gridTemplateColumns:"1.5fr 0.7fr 0.7fr 0.7fr 0.7fr 0.7fr",gap:4,
+                    alignItems:"center",padding:"9px 12px",background:"#0d1117",border:"1px solid #1e293b",borderRadius:6,marginBottom:5}},
+                    h("span",{style:{...S.pill(ts.bg,ts.col,ts.bd),maxWidth:140,overflow:"hidden",textOverflow:"ellipsis"}},t.name),
+                    h("span",{style:{fontSize:"11px",color:"#94a3b8",textAlign:"center"}},t.total),
+                    h("span",{style:{fontSize:"11px",color:"#94a3b8",textAlign:"center"}},t.takenTotal),
+                    h("span",{style:{fontSize:"11px",color:t.accuracy>=60?"#4ade80":t.accuracy>=50?"#facc15":"#f87171",textAlign:"center",fontWeight:600}},
+                      t.accuracy!=null ? fmtPct(t.accuracy,0) : "—"),
+                    h("span",{style:{fontSize:"11px",color:t.takenWR>=60?"#4ade80":t.takenWR>=50?"#facc15":"#f87171",textAlign:"center",fontWeight:600}},
+                      t.takenWR!=null ? fmtPct(t.takenWR,0) : "—"),
+                    h("span",{style:{fontSize:"12px",fontWeight:700,textAlign:"right",
+                      color:leaderTab==="pl"?(t.pl>0?"#4ade80":t.pl<0?"#f87171":"#94a3b8"):(t.roi>0?"#4ade80":t.roi<0?"#f87171":"#94a3b8")}},
+                      leaderTab==="pl" ? (t.pl>=0?"+":"")+fmt(t.pl) : (t.roi>=0?"+":"")+fmtPct(t.roi,1))
+                  );
+                })
         ),
 
         // Recent bets
-        bets.length > 0 && h("div", null,
-          h("div", { style: S.secTitle }, h("span",{style:S.dot("#facc15")}), "APUESTAS RECIENTES"),
-          bets.slice(0,6).map(b => h(BetCard, { key:b.id, bet:b, unitSize, onResult:updateResult, onDelete:deleteBet, showDelete:false }))
+        bets.length > 0 && h("div",null,
+          h("div",{style:S.secTitle}, h("span",{style:S.dot("#facc15")}), "APUESTAS RECIENTES"),
+          bets.slice(0,5).map(b => h(BetCard,{key:b.id,bet:b,unitSize,tipsters,onResult:updateResult,onDelete:deleteBet,onToggleTaken:toggleTaken,showDelete:false}))
         )
       ),
 
-      // ── BETS ──────────────────────────────────────────────────────────
-      view === "bets" && h(React.Fragment, null,
-
-        h("div", { style:{ display:"flex", gap:5, marginBottom:10, flexWrap:"wrap", alignItems:"center" } },
-          h("span", { style:{ fontSize:"10px", color:"#475569", marginRight:2 } }, "TIPSTER:"),
-          ["All",...tipsters].map(t => FilterChip(t, t, filter, setFilter))
+      // ── BETS ─────────────────────────────────────────────────────────
+      view==="bets" && h(React.Fragment,null,
+        h("div",{style:{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap",alignItems:"center"}},
+          h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"TIPSTER:"),
+          ["All",...tipsters].map(t => Chip(t,t,filter,setFilter))
         ),
-        h("div", { style:{ display:"flex", gap:5, marginBottom:16, flexWrap:"wrap", alignItems:"center" } },
-          h("span", { style:{ fontSize:"10px", color:"#475569", marginRight:2 } }, "RESULTADO:"),
-          ["All","pending","win","loss","void"].map(r => FilterChip(r.toUpperCase(), r, filterResult, setFilterResult))
+        h("div",{style:{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap",alignItems:"center"}},
+          h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"RESULTADO:"),
+          ["All","pending","win","loss","void"].map(r => Chip(r.toUpperCase(),r,filterResult,setFilterResult))
+        ),
+        h("div",{style:{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap",alignItems:"center"}},
+          h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"TIPO:"),
+          Chip("Todas","All",filterTaken,setFilterTaken),
+          Chip("✓ Jugadas","taken",filterTaken,setFilterTaken),
+          Chip("◯ Solo seguimiento","not-taken",filterTaken,setFilterTaken),
         ),
 
-        filtered.length === 0
-          ? h("div", { style:{ padding:"40px 20px", color:"#334155", textAlign:"center", fontSize:"12px" } }, "No hay apuestas con este filtro.")
-          : sortedDates.map(date =>
-              h("div", { key:date },
-                h("div", { style:{ fontSize:"10px", color:"#475569", letterSpacing:"0.1em", marginBottom:8, marginTop:12, paddingBottom:6, borderBottom:"1px solid #1e293b" } },
-                  "📅 "+date+" — "+byDate[date].length+" apuesta"+(byDate[date].length>1?"s":"")+" · "+fmt(byDate[date].reduce((a,b)=>a+calcPL(b,b.result,unitSize),0))+" P&L"
+        filtered.length===0
+          ? h("div",{style:{padding:"40px 20px",color:"#334155",textAlign:"center",fontSize:"12px"}},"No hay apuestas con este filtro.")
+          : sortedDates.map(date => {
+              const dayBets = byDate[date];
+              const dayPL = dayBets.reduce((a,b)=>a+calcPL(b,b.result,unitSize),0);
+              const dayTaken = dayBets.filter(b=>b.taken!==false).length;
+              return h("div",{key:date},
+                h("div",{style:{fontSize:"10px",color:"#475569",letterSpacing:"0.08em",marginBottom:7,marginTop:12,
+                  paddingBottom:6,borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:4}},
+                  h("span",null,"📅 "+date+" — "+dayBets.length+" pick"+(dayBets.length>1?"s":"")+" · "+dayTaken+" jugadas"),
+                  h("span",{style:{color:dayPL>0?"#4ade80":dayPL<0?"#f87171":"#94a3b8",fontWeight:600}},
+                    dayPL!==0?(dayPL>0?"+":"")+fmt(dayPL):"$0")
                 ),
-                byDate[date].map(b => h(BetCard, { key:b.id, bet:b, unitSize, onResult:updateResult, onDelete:deleteBet, showDelete:true }))
-              )
-            )
+                dayBets.map(b => h(BetCard,{key:b.id,bet:b,unitSize,tipsters,onResult:updateResult,onDelete:deleteBet,onToggleTaken:toggleTaken,showDelete:true}))
+              );
+            })
       ),
 
       // ── ADD BET ───────────────────────────────────────────────────────
-      view === "add" && h("div", { style:{ maxWidth:540 } },
-        h("div", { style:{ ...S.secTitle, marginBottom:16 } }, h("span",{style:S.dot("#22c55e")}), "REGISTRAR APUESTA"),
+      view==="add" && h("div",{style:{maxWidth:560}},
+        h("div",{style:{...S.secTitle,marginBottom:16}},h("span",{style:S.dot("#22c55e")}),"REGISTRAR APUESTA / PICK"),
 
-        h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 } },
-          h("div", null,
-            h("label", { style:S.lbl }, "Tipster"),
-            h("select", { value:form.tipster, onChange:e=>setForm({...form,tipster:e.target.value}), style:S.inp },
-              tipsters.map(t => h("option",{key:t,value:t},t))
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}},
+          h("div",null,
+            h("label",{style:S.lbl},"Tipster"),
+            h("select",{value:form.tipster,onChange:e=>setForm({...form,tipster:e.target.value}),style:S.inp},
+              tipsters.map(t=>h("option",{key:t,value:t},t))
             )
           ),
-          h("div", null,
-            h("label", { style:S.lbl }, "Fecha"),
-            h("input", { type:"date", value:form.date, onChange:e=>setForm({...form,date:e.target.value}), style:S.inp })
+          h("div",null,
+            h("label",{style:S.lbl},"Fecha"),
+            h("input",{type:"date",value:form.date,onChange:e=>setForm({...form,date:e.target.value}),style:S.inp})
           )
         ),
 
-        h("div", { style:{ marginTop:12 } },
-          h("label", { style:S.lbl }, "Partido"),
-          h("input", { placeholder:"ej. MIN Twins @ KC Royals", value:form.game, onChange:e=>setForm({...form,game:e.target.value}), style:S.inp })
+        h("div",{style:{marginTop:12}},
+          h("label",{style:S.lbl},"Partido"),
+          h("input",{placeholder:"ej. MIN Twins @ KC Royals",value:form.game,onChange:e=>setForm({...form,game:e.target.value}),style:S.inp})
         ),
 
-        h("div", { style:{ marginTop:12 } },
-          h("label", { style:S.lbl }, "Descripción de la apuesta"),
-          h("input", { placeholder:"ej. Twins ML / Pivetta Over 5.5 Ks", value:form.bet, onChange:e=>setForm({...form,bet:e.target.value}), style:S.inp })
+        h("div",{style:{marginTop:12}},
+          h("label",{style:S.lbl},"Descripción de la apuesta"),
+          h("input",{placeholder:"ej. Twins ML / Pivetta Over 5.5 Ks",value:form.bet,onChange:e=>setForm({...form,bet:e.target.value}),style:S.inp})
         ),
 
-        h("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:12 } },
-          h("div", null,
-            h("label", { style:S.lbl }, "Cuota (decimal)"),
-            h("input", { type:"number", step:"0.01", min:"1.01", placeholder:"1.85", value:form.odds, onChange:e=>setForm({...form,odds:e.target.value}), style:S.inp })
+        h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}},
+          h("div",null,
+            h("label",{style:S.lbl},"Cuota (decimal)"),
+            h("input",{type:"number",step:"0.01",min:"1.01",placeholder:"1.85",value:form.odds,onChange:e=>setForm({...form,odds:e.target.value}),style:S.inp})
           ),
-          h("div", null,
-            h("label", { style:S.lbl }, "Monto en COP"),
-            h("input", { type:"number", step:"500", placeholder:fmt(unitSize), value:form.stakeOverride, onChange:e=>setForm({...form,stakeOverride:e.target.value}), style:S.inp })
+          h("div",null,
+            h("label",{style:S.lbl},"Monto en COP (opcional)"),
+            h("input",{type:"number",step:"500",placeholder:fmt(unitSize),value:form.stakeOverride,onChange:e=>setForm({...form,stakeOverride:e.target.value}),style:S.inp})
           )
         ),
 
-        form.odds && +form.odds > 1 && h("div", { style:{ marginTop:8, padding:"9px 12px", background:"#0d2818", border:"1px solid #166534", borderRadius:5, fontSize:"11px", display:"flex", gap:20 } },
-          h("span", null, h("span",{style:{color:"#475569"}},"Stake: "), h("span",{style:{color:"#4ade80"}},fmt(form.stakeOverride?+form.stakeOverride:unitSize))),
-          h("span", null, h("span",{style:{color:"#475569"}},"Retorno: "), h("span",{style:{color:"#4ade80"}},"+"+fmt((form.stakeOverride?+form.stakeOverride:unitSize)*((+form.odds||1)-1))))
+        form.odds && +form.odds>1 && h("div",{style:{marginTop:8,padding:"9px 12px",background:"#0d2818",border:"1px solid #166534",borderRadius:5,fontSize:"11px",display:"flex",gap:20}},
+          h("span",null,h("span",{style:{color:"#475569"}},"Stake: "),h("span",{style:{color:"#4ade80"}},fmt(form.stakeOverride?+form.stakeOverride:unitSize))),
+          h("span",null,h("span",{style:{color:"#475569"}},"Retorno: "),h("span",{style:{color:"#4ade80"}},"+"+fmt((form.stakeOverride?+form.stakeOverride:unitSize)*((+form.odds||1)-1))))
         ),
 
-        h("div", { style:{ marginTop:12 } },
-          h("label", { style:S.lbl }, "Resultado"),
-          h("div", { style:{ display:"flex", gap:6, flexWrap:"wrap" } },
-            ["pending","win","loss","void"].map(r => {
-              const rc = RC[r]; const active = form.result===r;
-              return h("button", { key:r, onClick:()=>setForm({...form,result:r}),
-                style:{ padding:"6px 14px", borderRadius:4, fontSize:"11px", cursor:"pointer", border:"1px solid "+(active?rc.border:"#1e293b"), background:active?rc.bg:"transparent", color:active?rc.text:"#475569" }
-              }, r.toUpperCase());
+        h("div",{style:{marginTop:12}},
+          h("label",{style:S.lbl},"Resultado"),
+          h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+            ["pending","win","loss","void"].map(r=>{
+              const rc=RC[r]; const active=form.result===r;
+              return h("button",{key:r,onClick:()=>setForm({...form,result:r}),
+                style:{padding:"6px 14px",borderRadius:4,fontSize:"11px",cursor:"pointer",
+                  border:"1px solid "+(active?rc.border:"#1e293b"),background:active?rc.bg:"transparent",color:active?rc.text:"#475569"}
+              },r.toUpperCase());
             })
           )
         ),
 
-        h("div", { style:{ marginTop:12 } },
-          h("label", { style:S.lbl }, "Notas"),
-          h("input", { placeholder:"Análisis, razonamiento...", value:form.notes, onChange:e=>setForm({...form,notes:e.target.value}), style:S.inp })
+        h("div",{style:{marginTop:12}},
+          h("label",{style:S.lbl},"Notas"),
+          h("input",{placeholder:"Análisis, razonamiento...",value:form.notes,onChange:e=>setForm({...form,notes:e.target.value}),style:S.inp})
         ),
 
-        h("div", { style:{ marginTop:10, display:"flex", alignItems:"center", gap:8 } },
-          h("input", { type:"checkbox", id:"parlay", checked:form.isParlay, onChange:e=>setForm({...form,isParlay:e.target.checked}) }),
-          h("label", { htmlFor:"parlay", style:{ fontSize:"11px", color:"#94a3b8", cursor:"pointer" } }, "Es una apuesta combinada / parlay")
+        // Taken toggle + parlay
+        h("div",{style:{marginTop:14,padding:"12px 14px",background:"#0d1117",border:"1px solid #1e293b",borderRadius:8,display:"flex",flexDirection:"column",gap:12}},
+          h(Toggle,{
+            checked:form.taken,
+            onChange:()=>setForm({...form,taken:!form.taken}),
+            color:"#22c55e",
+            label: form.taken
+              ? "✓ Apuesta JUGADA — afecta P&L y precisión"
+              : "◯ Solo SEGUIMIENTO — solo afecta precisión del tipster"
+          }),
+          h(Toggle,{
+            checked:form.isParlay,
+            onChange:()=>setForm({...form,isParlay:!form.isParlay}),
+            color:"#facc15",
+            label:"Es combinada / parlay"
+          })
         ),
 
-        h("button", { onClick:addBet, style:{ ...S.btn("#166534","#4ade80","#22c55e"), width:"100%", padding:"11px", marginTop:14, fontSize:"13px", fontWeight:700, letterSpacing:"0.04em" } }, "+ REGISTRAR APUESTA")
+        h("button",{onClick:addBet,style:{...S.btn("#166534","#4ade80","#22c55e"),width:"100%",padding:"11px",marginTop:14,fontSize:"13px",fontWeight:700,letterSpacing:"0.04em"}},
+          "+ REGISTRAR " + (form.taken ? "APUESTA" : "PICK"))
       ),
 
-      // ── SETTINGS ──────────────────────────────────────────────────────
-      view === "settings" && h("div", { style:{ maxWidth:500 } },
-        h("div", { style:{ ...S.secTitle, marginBottom:16 } }, h("span",{style:S.dot("#60a5fa")}), "CONFIGURACIÓN"),
+      // ── SETTINGS ─────────────────────────────────────────────────────
+      view==="settings" && h("div",{style:{maxWidth:520}},
+        h("div",{style:{...S.secTitle,marginBottom:16}},h("span",{style:S.dot("#60a5fa")}),"CONFIGURACIÓN"),
 
         // Unit size
-        h("div", { style:{ ...S.card(), marginBottom:16 } },
-          h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:10, fontWeight:600 } }, "Tamaño de unidad"),
-          h("div", { style:{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" } },
+        h("div",{style:{...S.card(),marginBottom:14}},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:10,fontWeight:600}},"Tamaño de unidad base"),
+          h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
             editUnit
-              ? h(React.Fragment, null,
-                  h("input", { value:unitInput, onChange:e=>setUnitInput(e.target.value), type:"number", step:"500", style:{ ...S.inp, width:130 } }),
-                  h("span", { style:{ color:"#475569", fontSize:"11px" } }, "COP"),
-                  h("button", { onClick:handleSaveUnit, style:S.btn("#166534","#4ade80","#22c55e") }, "GUARDAR"),
-                  h("button", { onClick:()=>setEditUnit(false), style:S.btn("transparent","#475569","#1e293b") }, "CANCELAR")
+              ? h(React.Fragment,null,
+                  h("input",{value:unitInput,onChange:e=>setUnitInput(e.target.value),type:"number",step:"500",style:{...S.inp,width:130}}),
+                  h("span",{style:{color:"#475569",fontSize:"11px"}},"COP"),
+                  h("button",{onClick:handleSaveUnit,style:S.btn("#166534","#4ade80","#22c55e")},"GUARDAR"),
+                  h("button",{onClick:()=>setEditUnit(false),style:S.btn("transparent","#475569","#1e293b")},"CANCELAR")
                 )
-              : h(React.Fragment, null,
-                  h("span", { style:{ fontSize:"18px", fontWeight:700, color:"#22c55e" } }, fmt(unitSize)),
-                  h("button", { onClick:()=>setEditUnit(true), style:S.btn("transparent","#94a3b8","#1e293b") }, "EDITAR")
+              : h(React.Fragment,null,
+                  h("span",{style:{fontSize:"18px",fontWeight:700,color:"#22c55e"}},fmt(unitSize)),
+                  h("button",{onClick:()=>setEditUnit(true),style:S.btn("transparent","#94a3b8","#1e293b")},"EDITAR")
                 )
-          ),
-          h("div", { style:{ fontSize:"10px", color:"#475569", marginTop:8 } }, "Si ingresas el monto en COP al añadir apuestas, las unidades se ignoran.")
+          )
         ),
 
         // Tipsters
-        h("div", { style: S.card() },
-          h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:10, fontWeight:600 } }, "Tipsters"),
-          h("div", { style:{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 } },
-            tipsters.map(t => { const ts = TIPSTER_STYLE(t); return h("span",{key:t,style:S.pill(ts.bg,ts.col,ts.bd)},t); })
+        h("div",{style:{...S.card(),marginBottom:14}},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:10,fontWeight:600}},"Tipsters"),
+          h("div",{style:{display:"flex",flexDirection:"column",gap:6,marginBottom:12}},
+            tipsters.map((t,i) => {
+              const ts = TIPSTER_STYLE(t, tipsters);
+              return h("div",{key:t,style:{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",background:"#080c10",borderRadius:5,border:"1px solid #1e293b"}},
+                h("span",{style:{...S.pill(ts.bg,ts.col,ts.bd),flex:1}},t),
+                h("span",{style:{fontSize:"10px",color:"#334155",marginLeft:"auto"}},
+                  bets.filter(b=>b.tipster===t).length+" picks"),
+                h("button",{
+                  onClick:()=>removeTipster(t),
+                  style:{...S.btn("transparent","#ef4444","#7f1d1d"),padding:"2px 8px",fontSize:"10px"},
+                  title:"Eliminar tipster"
+                },"✕")
+              );
+            })
           ),
-          showAddTipster
-            ? h("div", { style:{ display:"flex", gap:8 } },
-                h("input", { placeholder:"Nombre del tipster...", value:newTipster, onChange:e=>setNewTipster(e.target.value), onKeyDown:e=>e.key==="Enter"&&handleAddTipster(), style:{ ...S.inp, flex:1 } }),
-                h("button", { onClick:handleAddTipster, style:S.btn("#166534","#4ade80","#22c55e") }, "AÑADIR"),
-                h("button", { onClick:()=>setShowAddTipster(false), style:S.btn("transparent","#475569","#1e293b") }, "✕")
-              )
-            : h("button", { onClick:()=>setShowAddTipster(true), style:S.btn("transparent","#94a3b8","#1e293b") }, "+ Añadir tipster"),
+          // Add new tipster
+          h("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+            h("input",{placeholder:"Nombre del nuevo tipster...",value:newTipster,
+              onChange:e=>setNewTipster(e.target.value),
+              onKeyDown:e=>e.key==="Enter"&&handleAddTipster(),
+              style:{...S.inp,flex:1}}),
+            h("button",{onClick:handleAddTipster,style:S.btn("#166534","#4ade80","#22c55e")},"+ AÑADIR")
+          )
+        ),
 
-          // Export / Import
-          h("div", { style:{ marginTop:16, paddingTop:14, borderTop:"1px solid #1e293b" } },
-            h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:8, fontWeight:600 } }, "Exportar / Importar datos"),
-            h("div", { style:{ display:"flex", gap:8 } },
-              h("button", {
-                onClick:() => {
-                  const data = JSON.stringify({ bets, unitSize, tipsters }, null, 2);
-                  const a = document.createElement("a");
-                  a.href = "data:application/json;charset=utf-8," + encodeURIComponent(data);
-                  a.download = "mlb-tracker-backup-"+today()+".json";
-                  a.click();
-                  showToast("Backup descargado ✓");
-                },
-                style: S.btn("transparent","#60a5fa","#1e3a5f")
-              }, "⬇ Exportar JSON"),
-              h("label", { style:{ ...S.btn("transparent","#a78bfa","#4c1d95"), cursor:"pointer" } },
-                "⬆ Importar JSON",
-                h("input", { type:"file", accept:".json", style:{ display:"none" }, onChange: e => {
-                  const file = e.target.files[0]; if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = ev => {
-                    try {
-                      const d = JSON.parse(ev.target.result);
-                      if (d.bets) saveBets(d.bets);
-                      if (d.unitSize) { saveUnit(d.unitSize); setUnitInput(String(d.unitSize)); }
-                      if (d.tipsters) saveTipsters(d.tipsters);
-                      showToast("Datos importados ✓");
-                    } catch { showToast("Archivo inválido", "err"); }
-                  };
-                  reader.readAsText(file);
-                }})
-              )
+        // Export / Import / Reset
+        h("div",{style:S.card()},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:10,fontWeight:600}},"Datos"),
+          h("div",{style:{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}},
+            h("button",{
+              onClick:()=>{
+                const data=JSON.stringify({bets,unitSize,tipsters},null,2);
+                const a=document.createElement("a");
+                a.href="data:application/json;charset=utf-8,"+encodeURIComponent(data);
+                a.download="mlb-tracker-backup-"+today()+".json"; a.click();
+                showToast("Backup descargado ✓");
+              },
+              style:S.btn("transparent","#60a5fa","#1e3a5f")
+            },"⬇ Exportar JSON"),
+            h("label",{style:{...S.btn("transparent","#a78bfa","#4c1d95"),cursor:"pointer"}},
+              "⬆ Importar JSON",
+              h("input",{type:"file",accept:".json",style:{display:"none"},onChange:e=>{
+                const file=e.target.files[0]; if(!file)return;
+                const reader=new FileReader();
+                reader.onload=ev=>{
+                  try{
+                    const d=JSON.parse(ev.target.result);
+                    if(d.bets) saveBets(d.bets.map(x=>({taken:true,...x})));
+                    if(d.unitSize){saveUnit(d.unitSize);setUnitInput(String(d.unitSize));}
+                    if(d.tipsters) saveTipsters(d.tipsters);
+                    showToast("Datos importados ✓");
+                  }catch{showToast("Archivo inválido","err");}
+                };
+                reader.readAsText(file);
+              }})
             )
           ),
-
-          // Danger zone
-          h("div", { style:{ marginTop:16, paddingTop:14, borderTop:"1px solid #1e293b" } },
-            h("div", { style:{ fontSize:"11px", color:"#94a3b8", marginBottom:8 } }, "Zona peligrosa"),
-            h("button", {
-              onClick:() => { if (confirm("¿Borrar TODAS las apuestas? Esto no se puede deshacer.")) { saveBets([]); showToast("Datos borrados","warn"); } },
-              style: S.btn("#2e0a0a","#f87171","#991b1b")
-            }, "🗑 Borrar todo")
-          )
+          h("button",{
+            onClick:()=>{if(confirm("¿Borrar TODAS las apuestas? No se puede deshacer.")){saveBets([]);showToast("Datos borrados","warn");}},
+            style:S.btn("#2e0a0a","#f87171","#991b1b")
+          },"🗑 Borrar todo")
         )
       )
     )
