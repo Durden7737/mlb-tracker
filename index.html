@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚾ MLB Bet Tracker</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #080c10; color: #e2e8f0; font-family: 'DM Mono', 'Courier New', monospace; font-size: 13px; }
+    #root { min-height: 100vh; }
+    input, select, button, textarea { font-family: inherit; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.5); }
+    select option { background: #0d1117; color: #e2e8f0; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #080c10; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #22c55e !important; box-shadow: 0 0 0 2px rgba(34,197,94,0.1); }
+    .drop-zone { border: 2px dashed #1e293b; border-radius: 10px; padding: 32px 20px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+    .drop-zone:hover, .drop-zone.dragging { border-color: #22c55e; background: #0d2818; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse { animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+    .slide-in { animation: slideIn 0.25s ease; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect, useRef } = React;
+const h = React.createElement;
+
+const LS = {
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+const TIPSTERS_DEFAULT = ["Claude AI", "Own Analysis", "ChatGPT", "Gemini", "Grok", "Copilot"];
+const today = () => new Date().toISOString().slice(0, 10);
+
+const RC = {
+  win:     { bg:"#0a2e1a", text:"#4ade80", border:"#166534", emoji:"✓" },
+  loss:    { bg:"#2e0a0a", text:"#f87171", border:"#991b1b", emoji:"✗" },
+  void:    { bg:"#1a1600", text:"#facc15", border:"#854d0e", emoji:"V" },
+  pending: { bg:"#0f172a", text:"#94a3b8", border:"#334155", emoji:"⏳" },
+};
+
+const TC = [
+  {bg:"#0d1f3c",col:"#60a5fa",bd:"#1e3a5f"},{bg:"#1a0d2e",col:"#c084fc",bd:"#4c1d95"},
+  {bg:"#0d2218",col:"#34d399",bd:"#065f46"},{bg:"#1a0f00",col:"#fb923c",bd:"#7c2d12"},
+  {bg:"#0f0f1a",col:"#a78bfa",bd:"#3730a3"},{bg:"#001a2e",col:"#38bdf8",bd:"#075985"},
+  {bg:"#1a1200",col:"#fbbf24",bd:"#92400e"},{bg:"#1a000d",col:"#fb7185",bd:"#9f1239"},
+  {bg:"#0a1a0a",col:"#86efac",bd:"#14532d"},{bg:"#1a1a00",col:"#fde68a",bd:"#92400e"},
+];
+
+const TS = (name, tipsters) => TC[tipsters.indexOf(name) % TC.length] || TC[0];
+const fmt = (n) => new Intl.NumberFormat("es-CO",{style:"currency",currency:"COP",maximumFractionDigits:0}).format(n);
+const fmtP = (n,d=1) => (n==null||isNaN(n)) ? "—" : n.toFixed(d)+"%";
+const genId = () => Math.random().toString(36).slice(2,10);
+const getStake = (bet,us) => bet.stakeOverride!=null ? bet.stakeOverride : Math.round(bet.units*us);
+const calcPL = (bet,result,us) => {
+  if(bet.taken===false) return 0;
+  const s=getStake(bet,us);
+  if(result==="win") return Math.round(s*(bet.odds-1));
+  if(result==="loss") return -s;
+  return 0;
+};
+
+const S = {
+  pill:(bg,col,bd)=>({fontSize:"10px",padding:"2px 8px",borderRadius:3,background:bg,color:col,border:"1px solid "+bd,whiteSpace:"nowrap",display:"inline-block"}),
+  inp:{background:"#0d1117",border:"1px solid #1e293b",borderRadius:5,padding:"8px 12px",color:"#e2e8f0",width:"100%",boxSizing:"border-box",fontSize:"13px"},
+  lbl:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:4,display:"block"},
+  card:(bc)=>({background:"#0d1117",border:"1px solid "+(bc||"#1e293b"),borderRadius:8,padding:"12px 14px"}),
+  btn:(bg,col,bd)=>({background:bg,border:"1px solid "+bd,color:col,padding:"6px 14px",borderRadius:5,cursor:"pointer",fontSize:"11px",fontFamily:"inherit",letterSpacing:"0.04em"}),
+  stitle:{fontSize:"10px",color:"#475569",letterSpacing:"0.12em",textTransform:"uppercase",display:"flex",alignItems:"center",gap:6,marginBottom:10},
+  dot:(c)=>({width:7,height:7,borderRadius:"50%",background:c,display:"inline-block",flexShrink:0}),
+};
+
+function Toggle({checked,onChange,label,color="#22c55e"}) {
+  return h("label",{style:{display:"flex",alignItems:"center",gap:8,cursor:"pointer",userSelect:"none"}},
+    h("div",{onClick:onChange,style:{width:36,height:20,borderRadius:10,position:"relative",cursor:"pointer",flexShrink:0,background:checked?color:"#1e293b",border:"1px solid "+(checked?color:"#334155"),transition:"background 0.2s"}},
+      h("div",{style:{position:"absolute",top:2,left:checked?16:2,width:14,height:14,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}})
+    ),
+    label&&h("span",{style:{fontSize:"11px",color:checked?"#e2e8f0":"#475569"}},label)
+  );
+}
+
+// ── AI Scanner ─────────────────────────────────────────────────────────────
+const PROMPT = `You are a sports betting slip parser. Analyze this screenshot and extract ALL bets.
+Return ONLY valid JSON, no markdown:
+{
+  "bets": [{
+    "game": "Away Team vs Home Team",
+    "bet": "full bet description including player name if prop",
+    "odds": 1.85,
+    "stake": 1250,
+    "date": "YYYY-MM-DD",
+    "isParlay": false,
+    "parlayLegs": ["leg1","leg2"],
+    "notes": "extra detail",
+    "result": "pending"
+  }],
+  "sportsbook": "name if visible"
+}
+Rules: decimal odds only (convert American: +150=2.50, -110=1.91). stake as number. isParlay=true for combos, list each leg in parlayLegs. Include player names in bet field for props. Return only JSON.`;
+
+async function scanImage(b64,mediaType,apiKey) {
+  const res = await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:"claude-opus-4-5",max_tokens:2000,messages:[{role:"user",content:[
+      {type:"image",source:{type:"base64",media_type:mediaType,data:b64}},
+      {type:"text",text:PROMPT}
+    ]}]})
+  });
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||"API error "+res.status);}
+  const d=await res.json();
+  const txt=d.content?.[0]?.text||"";
+  return JSON.parse(txt.replace(/```json|```/g,"").trim());
+}
+
+function fileToB64(file){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result.split(",")[1]);
+    r.onerror=rej;
+    r.readAsDataURL(file);
+  });
+}
+
+// ── Scanner component ──────────────────────────────────────────────────────
+function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd}) {
+  const [drag,setDrag]=useState(false);
+  const [scanning,setScanning]=useState(false);
+  const [preview,setPreview]=useState(null);
+  const [error,setError]=useState(null);
+  const [detected,setDetected]=useState(null);
+  const [showKey,setShowKey]=useState(false);
+  const [keyInput,setKeyInput]=useState(apiKey||"");
+
+  const process = async (file) => {
+    if(!file||!file.type.startsWith("image/")){ setError("Solo imágenes (PNG, JPG, WEBP)"); return; }
+    const key=apiKey||keyInput;
+    if(!key){ setShowKey(true); setError("Configura tu API key primero."); return; }
+    setError(null); setDetected(null);
+    setPreview(URL.createObjectURL(file));
+    setScanning(true);
+    try {
+      const b64=await fileToB64(file);
+      const r=await scanImage(b64,file.type,key);
+      setDetected(r);
+    } catch(e){ setError("Error: "+e.message); }
+    finally { setScanning(false); }
+  };
+
+  return h("div",null,
+    // API key
+    h("div",{style:{...S.card(),marginBottom:14}},
+      h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
+        h("div",null,
+          h("div",{style:{fontSize:"11px",fontWeight:600,color:"#94a3b8",marginBottom:2}},"🔑 Anthropic API Key"),
+          h("div",{style:{fontSize:"10px",color:"#475569"}},apiKey?"✓ Key configurada — escáner listo":"Requerida para escanear screenshots")
+        ),
+        h("button",{onClick:()=>setShowKey(!showKey),style:S.btn("transparent","#94a3b8","#1e293b")},showKey?"Cerrar":"Configurar")
+      ),
+      showKey&&h("div",{style:{marginTop:10,display:"flex",gap:8}},
+        h("input",{type:"password",placeholder:"sk-ant-...",value:keyInput,onChange:e=>setKeyInput(e.target.value),onKeyDown:e=>{if(e.key==="Enter"){onApiKeyChange(keyInput);setShowKey(false);}},style:{...S.inp,flex:1}}),
+        h("button",{onClick:()=>{onApiKeyChange(keyInput);setShowKey(false);},style:S.btn("#166534","#4ade80","#22c55e")},"GUARDAR")
+      ),
+      h("div",{style:{fontSize:"9px",color:"#334155",marginTop:6}},"Guardada en tu navegador. Obtén tu key en console.anthropic.com → API Keys")
+    ),
+
+    // Drop zone
+    h("label",{
+      className:"drop-zone"+(drag?" dragging":""),
+      onDrop:(e)=>{e.preventDefault();setDrag(false);const f=e.dataTransfer.files[0];if(f)process(f);},
+      onDragOver:(e)=>{e.preventDefault();setDrag(true);},
+      onDragLeave:()=>setDrag(false),
+      style:{display:"block"}
+    },
+      h("input",{type:"file",accept:"image/*",style:{display:"none"},onChange:e=>{if(e.target.files[0])process(e.target.files[0]);}}),
+      scanning
+        ? h("div",null,
+            h("div",{style:{fontSize:"28px",marginBottom:8},className:"spin"},"⚾"),
+            h("div",{style:{color:"#22c55e",fontWeight:600,marginBottom:4}},"Analizando screenshot..."),
+            h("div",{style:{color:"#475569",fontSize:"11px"},className:"pulse"},"Claude está leyendo tu ticket")
+          )
+        : h("div",null,
+            h("div",{style:{fontSize:"36px",marginBottom:10}},"📸"),
+            h("div",{style:{color:"#94a3b8",fontWeight:600,marginBottom:6}},"Arrastra un screenshot aquí"),
+            h("div",{style:{color:"#475569",fontSize:"11px",marginBottom:10}},"o haz clic para seleccionar"),
+            h("div",{style:{fontSize:"10px",color:"#334155"}},"Soporta tickets de cualquier casa de apuestas · PNG · JPG · WEBP")
+          )
+    ),
+
+    preview&&h("div",{style:{marginTop:10,borderRadius:8,overflow:"hidden",border:"1px solid #1e293b",maxHeight:200}},
+      h("img",{src:preview,style:{width:"100%",objectFit:"cover",objectPosition:"top",display:"block"}})
+    ),
+
+    error&&h("div",{style:{marginTop:10,padding:"10px 12px",background:"#2e0a0a",border:"1px solid #991b1b",borderRadius:6,color:"#f87171",fontSize:"11px"}},"⚠ "+error),
+
+    detected&&h("div",{className:"slide-in",style:{marginTop:14}},
+      h("div",{style:{...S.stitle,marginBottom:10}},
+        h("span",{style:S.dot("#22c55e")}),
+        detected.bets.length+" apuesta"+(detected.bets.length>1?"s":"")+" detectada"+(detected.bets.length>1?"s":""),
+        detected.sportsbook&&h("span",{style:{color:"#475569",fontSize:"10px",marginLeft:8}},"· "+detected.sportsbook)
+      ),
+      detected.bets.map((b,i)=>h(DetectedCard,{key:i,bet:b,tipsters,unitSize,onAdd})),
+      detected.bets.length>1&&h("button",{
+        onClick:()=>{
+          detected.bets.forEach(b=>onAdd({...b,tipster:tipsters[0]||"Claude AI",taken:true,result:b.result||"pending",date:b.date||today()}));
+          setDetected(null);
+        },
+        style:{...S.btn("#166534","#4ade80","#22c55e"),width:"100%",marginTop:8,padding:"10px",fontWeight:700}
+      },"✓ Añadir TODAS ("+detected.bets.length+") al tracker")
+    )
+  );
+}
+
+function DetectedCard({bet,tipsters,unitSize,onAdd}) {
+  const [tipster,setTipster]=useState(tipsters[0]||"Claude AI");
+  const [taken,setTaken]=useState(true);
+  const [result,setResult]=useState(bet.result||"pending");
+  const [added,setAdded]=useState(false);
+
+  const handle=()=>{
+    onAdd({
+      id:genId(),tipster,taken,result,
+      game:bet.game||"",
+      bet:bet.isParlay?"PARLAY: "+(bet.parlayLegs||[]).join(" + "):(bet.bet||""),
+      odds:+bet.odds||1.5,units:1,stakeOverride:bet.stake||null,
+      notes:bet.isParlay?(bet.parlayLegs||[]).join(" · ")+(bet.notes?" — "+bet.notes:""):(bet.notes||""),
+      date:bet.date||today(),isParlay:bet.isParlay||false,
+    });
+    setAdded(true);
+  };
+
+  return h("div",{style:{...S.card(),marginBottom:8,opacity:added?0.45:1,transition:"opacity 0.3s"}},
+    added&&h("div",{style:{fontSize:"11px",color:"#4ade80",marginBottom:6}},"✓ Añadida al tracker"),
+    h("div",{style:{fontSize:"10px",color:"#475569",marginBottom:2}},bet.date||today()),
+    h("div",{style:{fontSize:"13px",fontWeight:600,color:"#f8fafc",marginBottom:4}},
+      bet.isParlay&&h("span",{style:{...S.pill("#2d1b00","#facc15","#854d0e"),marginRight:6}},"PARLAY"),
+      bet.game||"Partido detectado"
+    ),
+    bet.isParlay
+      ? h("div",{style:{marginBottom:4}},
+          (bet.parlayLegs||[]).map((l,i)=>h("div",{key:i,style:{fontSize:"11px",color:"#64748b",padding:"2px 0"}},"  · "+l))
+        )
+      : h("div",{style:{fontSize:"12px",color:"#94a3b8",marginBottom:4}},bet.bet),
+    bet.notes&&!bet.isParlay&&h("div",{style:{fontSize:"10px",color:"#475569",marginTop:2}},bet.notes),
+    h("div",{style:{display:"flex",gap:6,flexWrap:"wrap",margin:"8px 0"}},
+      h("span",{style:S.pill("#0f172a","#94a3b8","#1e293b")},(+bet.odds).toFixed(2)+"x"),
+      bet.stake&&h("span",{style:S.pill("#0f172a","#94a3b8","#1e293b")},fmt(bet.stake))
+    ),
+    h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:8}},
+      h("div",null,
+        h("label",{style:S.lbl},"Tipster"),
+        h("select",{value:tipster,onChange:e=>setTipster(e.target.value),style:{...S.inp,fontSize:"11px"}},
+          tipsters.map(t=>h("option",{key:t,value:t},t))
+        )
+      ),
+      h("div",null,
+        h("label",{style:S.lbl},"Resultado"),
+        h("div",{style:{display:"flex",gap:3}},
+          ["pending","win","loss","void"].map(r=>{const rc=RC[r];return h("button",{key:r,title:r,onClick:()=>setResult(r),style:{flex:1,padding:"5px 2px",borderRadius:3,fontSize:"10px",cursor:"pointer",border:"1px solid "+(result===r?rc.border:"#1e293b"),background:result===r?rc.bg:"transparent",color:result===r?rc.text:"#475569"}},rc.emoji);})
+        )
+      )
+    ),
+    h("div",{style:{display:"flex",gap:8,marginTop:8,alignItems:"center"}},
+      h(Toggle,{checked:taken,onChange:()=>setTaken(!taken),color:"#22c55e",label:taken?"Jugada":"Solo seguimiento"}),
+      h("button",{onClick:handle,disabled:added,style:{...S.btn(added?"#0a2e1a":"#166534","#4ade80",added?"#166534":"#22c55e"),marginLeft:"auto",fontWeight:700}},added?"✓ Añadida":"+ Añadir")
+    )
+  );
+}
+
+// ── BetCard ────────────────────────────────────────────────────────────────
+function BetCard({bet,unitSize,tipsters,onResult,onDelete,onToggle,showDelete}) {
+  const c=RC[bet.result];
+  const ts=TS(bet.tipster,tipsters);
+  const pl=calcPL(bet,bet.result,unitSize);
+  const stake=getStake(bet,unitSize);
+  const taken=bet.taken!==false;
+  return h("div",{style:{background:"#0d1117",border:"1px solid "+(taken?c.border:"#1e293b"),borderLeft:"3px solid "+(taken?c.border:"#334155"),borderRadius:8,padding:"12px 14px",marginBottom:8,opacity:taken?1:0.72}},
+    h("div",{style:{display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap",marginBottom:6}},
+      h("div",{style:{flex:1,minWidth:0}},
+        h("div",{style:{fontSize:"10px",color:"#475569",marginBottom:2}},bet.date+" · "+bet.game),
+        h("div",{style:{fontSize:"13px",fontWeight:600,color:"#f8fafc",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}},
+          bet.isParlay&&h("span",{style:S.pill("#2d1b00","#facc15","#854d0e")},"PARLAY"),
+          !taken&&h("span",{style:S.pill("#0f172a","#64748b","#334155")},"NO JUGADA"),
+          bet.bet
+        ),
+        bet.notes&&h("div",{style:{fontSize:"10px",color:"#475569",marginTop:3}},bet.notes)
+      ),
+      h("div",{style:{textAlign:"right",flexShrink:0}},
+        taken?h("div",{style:{fontSize:"13px",fontWeight:700,color:pl>0?"#4ade80":pl<0?"#f87171":"#94a3b8"}},bet.result==="pending"?"⏳":(pl>=0?"+":"")+fmt(pl)):h("div",{style:{fontSize:"11px",color:"#475569"}},"seguimiento"),
+        taken&&bet.result!=="pending"&&h("div",{style:{fontSize:"10px",color:"#475569",marginTop:2}},fmt(stake)+" apost.")
+      )
+    ),
+    h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:6}},
+      h("div",{style:{display:"flex",gap:5,flexWrap:"wrap"}},
+        h("span",{style:S.pill("#0f172a","#94a3b8","#1e293b")},bet.odds.toFixed(2)+"x"),
+        taken&&h("span",{style:S.pill("#0f172a","#64748b","#1e293b")},fmt(stake)),
+        h("span",{style:S.pill(ts.bg,ts.col,ts.bd)},bet.tipster),
+        h("span",{style:S.pill(c.bg,c.text,c.border)},bet.result.toUpperCase())
+      ),
+      h("div",{style:{display:"flex",gap:3,alignItems:"center",flexWrap:"wrap"}},
+        h(Toggle,{checked:taken,onChange:()=>onToggle(bet.id),color:"#22c55e",label:taken?"Jugada":"No jugada"}),
+        h("div",{style:{display:"flex",gap:2,marginLeft:6}},
+          ["pending","win","loss","void"].map(r=>{const rc=RC[r];const act=bet.result===r;return h("button",{key:r,title:r,onClick:()=>onResult(bet.id,r),style:{padding:"3px 8px",borderRadius:3,fontSize:"11px",cursor:"pointer",border:"1px solid "+(act?rc.border:"#1e293b"),background:act?rc.bg:"transparent",color:act?rc.text:"#475569"}},rc.emoji);})
+        ),
+        showDelete&&h("button",{onClick:()=>onDelete(bet.id),style:{...S.btn("transparent","#ef4444","#7f1d1d"),padding:"3px 8px",marginLeft:2}},"🗑")
+      )
+    )
+  );
+}
+
+function KPI({label,value,sub,green,red,yellow}) {
+  const col=green?"#4ade80":red?"#f87171":yellow?"#facc15":"#f8fafc";
+  const bd=green?"#166534":red?"#991b1b":yellow?"#854d0e":"#1e293b";
+  return h("div",{style:{...S.card(bd),padding:"12px 14px"}},
+    h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:5}},label),
+    h("div",{style:{fontSize:"20px",fontWeight:700,color:col,lineHeight:1.2}},value),
+    h("div",{style:{fontSize:"10px",color:"#475569",marginTop:3}},sub)
+  );
+}
+
+// ── App ────────────────────────────────────────────────────────────────────
+function App() {
+  const [bets,setBets]=useState([]);
+  const [unitSize,setUS]=useState(5000);
+  const [tipsters,setTipsters]=useState(TIPSTERS_DEFAULT);
+  const [view,setView]=useState("dashboard");
+  const [fTip,setFTip]=useState("All");
+  const [fRes,setFRes]=useState("All");
+  const [fTak,setFTak]=useState("All");
+  const [editUnit,setEditUnit]=useState(false);
+  const [uInput,setUInput]=useState("5000");
+  const [newTip,setNewTip]=useState("");
+  const [loaded,setLoaded]=useState(false);
+  const [toast,setToast]=useState(null);
+  const [lTab,setLTab]=useState("pl");
+  const [apiKey,setApiKey]=useState("");
+  const [mode,setMode]=useState("manual");
+  const tt=useRef();
+
+  const ef=()=>({tipster:tipsters[0]||"Claude AI",game:"",bet:"",odds:"",units:"1",stakeOverride:"",result:"pending",notes:"",date:today(),isParlay:false,taken:true});
+  const [form,setForm]=useState(ef());
+
+  useEffect(()=>{
+    const b=LS.get("mlbt_bets4"),u=LS.get("mlbt_unit4"),t=LS.get("mlbt_tips4"),k=LS.get("mlbt_key4");
+    if(b) setBets(b.map(x=>({taken:true,...x})));
+    if(u){setUS(u);setUInput(String(u));}
+    if(t) setTipsters(t);
+    if(k) setApiKey(k);
+    setLoaded(true);
+  },[]);
+
+  const showT=(msg,type="ok")=>{setToast({msg,type});clearTimeout(tt.current);tt.current=setTimeout(()=>setToast(null),2800);};
+  const savB=(b)=>{setBets(b);LS.set("mlbt_bets4",b);};
+  const savU=(u)=>{setUS(u);LS.set("mlbt_unit4",u);};
+  const savT=(t)=>{setTipsters(t);LS.set("mlbt_tips4",t);};
+  const savK=(k)=>{setApiKey(k);LS.set("mlbt_key4",k);};
+
+  const updRes=(id,r)=>savB(bets.map(b=>b.id===id?{...b,result:r}:b));
+  const togTak=(id)=>savB(bets.map(b=>b.id===id?{...b,taken:!(b.taken!==false)}:b));
+  const delBet=(id)=>{savB(bets.filter(b=>b.id!==id));showT("Eliminada","warn");};
+
+  const addBet=()=>{
+    if(!form.game||!form.bet||!form.odds){showT("Completa partido, apuesta y cuota","err");return;}
+    const nb={...form,id:genId(),odds:+form.odds,units:+form.units,stakeOverride:form.stakeOverride?+form.stakeOverride:null};
+    savB([nb,...bets]);setForm(ef());showT("Apuesta registrada ✓");setView("bets");
+  };
+
+  const onDetected=(newBets)=>{
+    const mapped=Array.isArray(newBets)?newBets:[newBets];
+    savB([...mapped,...bets]);
+    showT(mapped.length+" apuesta"+(mapped.length>1?"s":"")+" añadida"+(mapped.length>1?"s":"")+" ✓");
+  };
+
+  const saveUnit=()=>{const v=+uInput;if(v>0){savU(v);showT("Unidad actualizada");}setEditUnit(false);};
+  const addTip=()=>{if(!newTip.trim())return;if(tipsters.includes(newTip.trim())){showT("Ya existe","err");return;}const u=[...tipsters,newTip.trim()];savT(u);setNewTip("");showT("Tipster añadido ✓");};
+  const remTip=(n)=>{if(bets.some(b=>b.tipster===n)){showT("Tiene apuestas asociadas","err");return;}savT(tipsters.filter(t=>t!==n));};
+
+  // stats
+  const stats=(()=>{
+    const tb=bets.filter(b=>b.taken!==false);
+    const as=bets.filter(b=>b.result!=="pending"&&b.result!=="void");
+    const ts2=tb.filter(b=>b.result!=="pending"&&b.result!=="void");
+    const tw=ts2.filter(b=>b.result==="win");
+    const aw=as.filter(b=>b.result==="win");
+    const tpl=bets.reduce((a,b)=>a+calcPL(b,b.result,unitSize),0);
+    const tsk=ts2.reduce((a,b)=>a+getStake(b,unitSize),0);
+    const roi=tsk>0?tpl/tsk*100:0;
+    const pend=bets.filter(b=>b.result==="pending");
+    const pot=pend.filter(b=>b.taken!==false).reduce((a,b)=>a+getStake(b,unitSize)*b.odds,0);
+    const byT=tipsters.map(t=>{
+      const all=bets.filter(b=>b.tipster===t);if(!all.length)return null;
+      const tak=all.filter(b=>b.taken!==false);
+      const as2=all.filter(b=>b.result!=="pending"&&b.result!=="void");
+      const ts3=tak.filter(b=>b.result!=="pending"&&b.result!=="void");
+      const aw2=as2.filter(b=>b.result==="win");
+      const tw2=ts3.filter(b=>b.result==="win");
+      const pl=tak.reduce((a,b)=>a+calcPL(b,b.result,unitSize),0);
+      const sk=ts3.reduce((a,b)=>a+getStake(b,unitSize),0);
+      return {name:t,total:all.length,tak:tak.length,pl,sk,roi:sk>0?pl/sk*100:0,
+        acc:as2.length>0?aw2.length/as2.length*100:null,wr:ts3.length>0?tw2.length/ts3.length*100:null,
+        aw:aw2.length,as:as2.length,tw:tw2.length,ts:ts3.length};
+    }).filter(Boolean);
+    return {tpl,roi,tw:tw.length,tl:ts2.length-tw.length,aw:aw.length,as:as.length,
+      acc:as.length>0?aw.length/as.length*100:null,wr:ts2.length>0?tw.length/ts2.length*100:null,
+      pend:pend.length,pot,total:bets.length,tak:tb.length,ntk:bets.length-tb.length,tsk,byT};
+  })();
+
+  const fil=bets.filter(b=>{
+    return (fTip==="All"||b.tipster===fTip)&&(fRes==="All"||b.result===fRes)&&
+      (fTak==="All"||(fTak==="taken"?b.taken!==false:b.taken===false));
+  });
+  const byD=fil.reduce((a,b)=>{(a[b.date]=a[b.date]||[]).push(b);return a;},{});
+  const dts=Object.keys(byD).sort((a,b)=>b.localeCompare(a));
+
+  if(!loaded) return h("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#080c10"}},h("span",{style:{color:"#22c55e"}},"Cargando..."));
+
+  const NB=(label,v,cnt)=>h("button",{key:v,onClick:()=>setView(v),style:{padding:"6px 14px",borderRadius:5,border:"1px solid "+(view===v?"#22c55e":"#1e293b"),background:view===v?"#0d2818":"transparent",color:view===v?"#22c55e":"#64748b",cursor:"pointer",fontSize:"11px",letterSpacing:"0.06em"}},label+(cnt!=null?` (${cnt})`:""));
+  const Ch=(label,val,cur,setter)=>h("button",{key:val,onClick:()=>setter(val),style:{padding:"3px 10px",borderRadius:20,border:"1px solid "+(cur===val?"#22c55e":"#1e293b"),background:cur===val?"#0d2818":"transparent",color:cur===val?"#4ade80":"#475569",cursor:"pointer",fontSize:"10px"}},label);
+  const TB=(label,val)=>h("button",{onClick:()=>setLTab(val),style:{padding:"4px 12px",borderRadius:4,border:"1px solid "+(lTab===val?"#22c55e":"#1e293b"),background:lTab===val?"#0d2818":"transparent",color:lTab===val?"#4ade80":"#64748b",cursor:"pointer",fontSize:"10px",fontFamily:"inherit"}},label);
+
+  return h("div",{style:{minHeight:"100vh",background:"#080c10",color:"#e2e8f0"}},
+
+    toast&&h("div",{style:{position:"fixed",top:16,right:16,zIndex:9999,padding:"10px 16px",borderRadius:6,maxWidth:300,fontSize:"12px",background:toast.type==="err"?"#2e0a0a":toast.type==="warn"?"#1a1600":"#0a2e1a",border:"1px solid "+(toast.type==="err"?"#991b1b":toast.type==="warn"?"#854d0e":"#166534"),color:toast.type==="err"?"#f87171":toast.type==="warn"?"#facc15":"#4ade80"}},toast.msg),
+
+    h("div",{style:{borderBottom:"1px solid #1e293b",padding:"14px 20px",background:"#080c10",position:"sticky",top:0,zIndex:50,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}},
+      h("div",null,
+        h("div",{style:{fontSize:"16px",fontWeight:700,color:"#f8fafc",letterSpacing:"-0.02em"}},"⚾ MLB ",h("span",{style:{color:"#22c55e"}},"TRACKER")),
+        h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginTop:2}},"P&L EN PESOS COLOMBIANOS")
+      ),
+      h("div",{style:{display:"flex",gap:4,flexWrap:"wrap"}},NB("DASHBOARD","dashboard"),NB("APUESTAS","bets",bets.length),NB("+ NUEVA","add"),NB("⚙","settings"))
+    ),
+
+    h("div",{style:{padding:"20px",maxWidth:960,margin:"0 auto"}},
+
+      // DASHBOARD
+      view==="dashboard"&&h(React.Fragment,null,
+        h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginBottom:6,display:"flex",alignItems:"center",gap:6}},h("span",{style:S.dot("#22c55e")}),"FINANCIERO — solo apuestas jugadas"),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:16}},
+          h(KPI,{label:"P&L TOTAL",value:(stats.tpl>=0?"+":"")+fmt(stats.tpl),sub:fmt(stats.tsk)+" apost.",green:stats.tpl>0,red:stats.tpl<0}),
+          h(KPI,{label:"ROI",value:(stats.roi>=0?"+":"")+fmtP(stats.roi),sub:stats.tw+"W – "+stats.tl+"L",green:stats.roi>0,red:stats.roi<0}),
+          h(KPI,{label:"WIN RATE",value:stats.wr!=null?fmtP(stats.wr,0):"—",sub:stats.tw+"W "+stats.tl+"L"}),
+          h(KPI,{label:"PENDIENTES",value:String(stats.pend),sub:"pot. "+fmt(stats.pot),yellow:stats.pend>0})
+        ),
+        h("div",{style:{fontSize:"9px",color:"#475569",letterSpacing:"0.1em",marginBottom:6,display:"flex",alignItems:"center",gap:6}},h("span",{style:S.dot("#a78bfa")}),"PRECISIÓN — todas las apuestas"),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:20}},
+          h(KPI,{label:"ACIERTO",value:stats.acc!=null?fmtP(stats.acc,0):"—",sub:stats.aw+"/"+stats.as+" acertadas"}),
+          h(KPI,{label:"TOTAL PICKS",value:String(stats.total),sub:stats.tak+" jugadas · "+stats.ntk+" seguimiento"})
+        ),
+
+        h("div",{style:{marginBottom:20}},
+          h("div",{style:{...S.stitle,justifyContent:"space-between",flexWrap:"wrap",gap:8}},
+            h("div",{style:{display:"flex",alignItems:"center",gap:6}},h("span",{style:S.dot("#22c55e")}),"LEADERBOARD"),
+            h("div",{style:{display:"flex",gap:4}},TB("P&L","pl"),TB("Precisión","accuracy"))
+          ),
+          h("div",{style:{display:"grid",gridTemplateColumns:"1.5fr 0.6fr 0.6fr 0.7fr 0.7fr 0.8fr",gap:4,padding:"4px 12px",marginBottom:4}},
+            ["TIPSTER","PICKS","JUG.","ACIERTO","W RATE",lTab==="pl"?"P&L":"ROI"].map((l,i)=>h("span",{key:i,style:{fontSize:"9px",color:"#334155",textAlign:i>0?"center":"left",letterSpacing:"0.06em"}},l))
+          ),
+          stats.byT.length===0?h("div",{style:{padding:"24px",color:"#334155",textAlign:"center"}},"Sin apuestas aún."):
+          [...stats.byT].sort((a,b)=>lTab==="pl"?b.pl-a.pl:(b.acc||0)-(a.acc||0)).map(t=>{
+            const ts2=TS(t.name,tipsters);
+            return h("div",{key:t.name,style:{display:"grid",gridTemplateColumns:"1.5fr 0.6fr 0.6fr 0.7fr 0.7fr 0.8fr",gap:4,alignItems:"center",padding:"9px 12px",background:"#0d1117",border:"1px solid #1e293b",borderRadius:6,marginBottom:5}},
+              h("span",{style:{...S.pill(ts2.bg,ts2.col,ts2.bd),overflow:"hidden",textOverflow:"ellipsis"}},t.name),
+              h("span",{style:{fontSize:"11px",color:"#94a3b8",textAlign:"center"}},t.total),
+              h("span",{style:{fontSize:"11px",color:"#94a3b8",textAlign:"center"}},t.tak),
+              h("span",{style:{fontSize:"11px",fontWeight:600,textAlign:"center",color:t.acc>=60?"#4ade80":t.acc>=50?"#facc15":"#f87171"}},t.acc!=null?fmtP(t.acc,0):"—"),
+              h("span",{style:{fontSize:"11px",fontWeight:600,textAlign:"center",color:t.wr>=60?"#4ade80":t.wr>=50?"#facc15":"#f87171"}},t.wr!=null?fmtP(t.wr,0):"—"),
+              h("span",{style:{fontSize:"12px",fontWeight:700,textAlign:"right",color:lTab==="pl"?(t.pl>0?"#4ade80":t.pl<0?"#f87171":"#94a3b8"):(t.roi>0?"#4ade80":t.roi<0?"#f87171":"#94a3b8")}},lTab==="pl"?(t.pl>=0?"+":"")+fmt(t.pl):(t.roi>=0?"+":"")+fmtP(t.roi,1))
+            );
+          })
+        ),
+        bets.length>0&&h("div",null,h("div",{style:S.stitle},h("span",{style:S.dot("#facc15")}),"RECIENTES"),bets.slice(0,5).map(b=>h(BetCard,{key:b.id,bet:b,unitSize,tipsters,onResult:updRes,onDelete:delBet,onToggle:togTak,showDelete:false})))
+      ),
+
+      // BETS
+      view==="bets"&&h(React.Fragment,null,
+        h("div",{style:{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap",alignItems:"center"}},h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"TIPSTER:"),["All",...tipsters].map(t=>Ch(t,t,fTip,setFTip))),
+        h("div",{style:{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap",alignItems:"center"}},h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"RESULTADO:"),["All","pending","win","loss","void"].map(r=>Ch(r.toUpperCase(),r,fRes,setFRes))),
+        h("div",{style:{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap",alignItems:"center"}},h("span",{style:{fontSize:"10px",color:"#475569",marginRight:2}},"TIPO:"),Ch("Todas","All",fTak,setFTak),Ch("✓ Jugadas","taken",fTak,setFTak),Ch("◯ Seguimiento","not-taken",fTak,setFTak)),
+        fil.length===0?h("div",{style:{padding:"40px 20px",color:"#334155",textAlign:"center"}},"Sin resultados."):
+        dts.map(d=>{
+          const db=byD[d],dpl=db.reduce((a,b)=>a+calcPL(b,b.result,unitSize),0),dtk=db.filter(b=>b.taken!==false).length;
+          return h("div",{key:d},
+            h("div",{style:{fontSize:"10px",color:"#475569",marginBottom:7,marginTop:12,paddingBottom:6,borderBottom:"1px solid #1e293b",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:4}},
+              h("span",null,"📅 "+d+" — "+db.length+" picks · "+dtk+" jugadas"),
+              h("span",{style:{color:dpl>0?"#4ade80":dpl<0?"#f87171":"#94a3b8",fontWeight:600}},dpl!==0?(dpl>0?"+":"")+fmt(dpl):"$0")
+            ),
+            db.map(b=>h(BetCard,{key:b.id,bet:b,unitSize,tipsters,onResult:updRes,onDelete:delBet,onToggle:togTak,showDelete:true}))
+          );
+        })
+      ),
+
+      // ADD
+      view==="add"&&h("div",{style:{maxWidth:600}},
+        h("div",{style:{display:"flex",gap:0,marginBottom:16,border:"1px solid #1e293b",borderRadius:7,overflow:"hidden"}},
+          h("button",{onClick:()=>setMode("manual"),style:{flex:1,padding:"10px",border:"none",background:mode==="manual"?"#0d2818":"transparent",color:mode==="manual"?"#22c55e":"#475569",cursor:"pointer",fontSize:"12px",fontFamily:"inherit",fontWeight:mode==="manual"?700:400,borderRight:"1px solid #1e293b"}},"✏️ Manual"),
+          h("button",{onClick:()=>setMode("scan"),style:{flex:1,padding:"10px",border:"none",background:mode==="scan"?"#0d2818":"transparent",color:mode==="scan"?"#22c55e":"#475569",cursor:"pointer",fontSize:"12px",fontFamily:"inherit",fontWeight:mode==="scan"?700:400}},"📸 Escanear Screenshot")
+        ),
+
+        mode==="scan"&&h(Scanner,{tipsters,unitSize,apiKey,onApiKeyChange:savK,onAdd:onDetected}),
+
+        mode==="manual"&&h("div",null,
+          h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}},
+            h("div",null,h("label",{style:S.lbl},"Tipster"),h("select",{value:form.tipster,onChange:e=>setForm({...form,tipster:e.target.value}),style:S.inp},tipsters.map(t=>h("option",{key:t,value:t},t)))),
+            h("div",null,h("label",{style:S.lbl},"Fecha"),h("input",{type:"date",value:form.date,onChange:e=>setForm({...form,date:e.target.value}),style:S.inp}))
+          ),
+          h("div",{style:{marginTop:12}},h("label",{style:S.lbl},"Partido"),h("input",{placeholder:"ej. MIN Twins @ KC Royals",value:form.game,onChange:e=>setForm({...form,game:e.target.value}),style:S.inp})),
+          h("div",{style:{marginTop:12}},h("label",{style:S.lbl},"Apuesta / Prop"),h("input",{placeholder:"ej. Twins ML / Pivetta Over 5.5 Ks",value:form.bet,onChange:e=>setForm({...form,bet:e.target.value}),style:S.inp})),
+          h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}},
+            h("div",null,h("label",{style:S.lbl},"Cuota (decimal)"),h("input",{type:"number",step:"0.01",min:"1.01",placeholder:"1.85",value:form.odds,onChange:e=>setForm({...form,odds:e.target.value}),style:S.inp})),
+            h("div",null,h("label",{style:S.lbl},"Monto COP"),h("input",{type:"number",step:"500",placeholder:fmt(unitSize),value:form.stakeOverride,onChange:e=>setForm({...form,stakeOverride:e.target.value}),style:S.inp}))
+          ),
+          form.odds&&+form.odds>1&&h("div",{style:{marginTop:8,padding:"9px 12px",background:"#0d2818",border:"1px solid #166534",borderRadius:5,fontSize:"11px",display:"flex",gap:20}},
+            h("span",null,h("span",{style:{color:"#475569"}},"Stake: "),h("span",{style:{color:"#4ade80"}},fmt(form.stakeOverride?+form.stakeOverride:unitSize))),
+            h("span",null,h("span",{style:{color:"#475569"}},"Retorno: "),h("span",{style:{color:"#4ade80"}},"+"+fmt((form.stakeOverride?+form.stakeOverride:unitSize)*((+form.odds||1)-1))))
+          ),
+          h("div",{style:{marginTop:12}},h("label",{style:S.lbl},"Resultado"),
+            h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},["pending","win","loss","void"].map(r=>{const rc=RC[r];const act=form.result===r;return h("button",{key:r,onClick:()=>setForm({...form,result:r}),style:{padding:"6px 14px",borderRadius:4,fontSize:"11px",cursor:"pointer",border:"1px solid "+(act?rc.border:"#1e293b"),background:act?rc.bg:"transparent",color:act?rc.text:"#475569"}},r.toUpperCase());}))
+          ),
+          h("div",{style:{marginTop:12}},h("label",{style:S.lbl},"Notas"),h("input",{placeholder:"Análisis, razonamiento...",value:form.notes,onChange:e=>setForm({...form,notes:e.target.value}),style:S.inp})),
+          h("div",{style:{marginTop:14,padding:"12px 14px",background:"#0d1117",border:"1px solid #1e293b",borderRadius:8,display:"flex",flexDirection:"column",gap:12}},
+            h(Toggle,{checked:form.taken,onChange:()=>setForm({...form,taken:!form.taken}),color:"#22c55e",label:form.taken?"✓ Apuesta JUGADA — afecta P&L y precisión":"◯ Solo SEGUIMIENTO — solo afecta precisión"}),
+            h(Toggle,{checked:form.isParlay,onChange:()=>setForm({...form,isParlay:!form.isParlay}),color:"#facc15",label:"Es combinada / parlay"})
+          ),
+          h("button",{onClick:addBet,style:{...S.btn("#166534","#4ade80","#22c55e"),width:"100%",padding:"11px",marginTop:14,fontSize:"13px",fontWeight:700}},
+            "+ REGISTRAR "+(form.taken?"APUESTA":"PICK"))
+        )
+      ),
+
+      // SETTINGS
+      view==="settings"&&h("div",{style:{maxWidth:520}},
+        h("div",{style:{...S.stitle,marginBottom:16}},h("span",{style:S.dot("#60a5fa")}),"CONFIGURACIÓN"),
+        h("div",{style:{...S.card(),marginBottom:14}},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:8,fontWeight:600}},"🔑 API Key de Anthropic"),
+          h("div",{style:{display:"flex",gap:8}},
+            h("input",{type:"password",placeholder:"sk-ant-...",value:apiKey,onChange:e=>setApiKey(e.target.value),style:{...S.inp,flex:1}}),
+            h("button",{onClick:()=>{savK(apiKey);showT("API key guardada ✓");},style:S.btn("#166534","#4ade80","#22c55e")},"GUARDAR")
+          ),
+          h("div",{style:{fontSize:"9px",color:"#334155",marginTop:6}},"Guardada solo en tu navegador · console.anthropic.com → API Keys")
+        ),
+        h("div",{style:{...S.card(),marginBottom:14}},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:8,fontWeight:600}},"Tamaño de unidad base"),
+          h("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+            editUnit
+              ?h(React.Fragment,null,h("input",{value:uInput,onChange:e=>setUInput(e.target.value),type:"number",step:"500",style:{...S.inp,width:130}}),h("span",{style:{color:"#475569",fontSize:"11px"}},"COP"),h("button",{onClick:saveUnit,style:S.btn("#166534","#4ade80","#22c55e")},"GUARDAR"),h("button",{onClick:()=>setEditUnit(false),style:S.btn("transparent","#475569","#1e293b")},"CANCELAR"))
+              :h(React.Fragment,null,h("span",{style:{fontSize:"18px",fontWeight:700,color:"#22c55e"}},fmt(unitSize)),h("button",{onClick:()=>setEditUnit(true),style:S.btn("transparent","#94a3b8","#1e293b")},"EDITAR"))
+          )
+        ),
+        h("div",{style:{...S.card(),marginBottom:14}},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:10,fontWeight:600}},"Tipsters"),
+          h("div",{style:{display:"flex",flexDirection:"column",gap:6,marginBottom:12}},
+            tipsters.map(t=>{
+              const ts2=TS(t,tipsters);
+              return h("div",{key:t,style:{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",background:"#080c10",borderRadius:5,border:"1px solid #1e293b"}},
+                h("span",{style:{...S.pill(ts2.bg,ts2.col,ts2.bd),flex:1}},t),
+                h("span",{style:{fontSize:"10px",color:"#334155"}},bets.filter(b=>b.tipster===t).length+" picks"),
+                h("button",{onClick:()=>remTip(t),style:{...S.btn("transparent","#ef4444","#7f1d1d"),padding:"2px 8px",fontSize:"10px"}},"✕")
+              );
+            })
+          ),
+          h("div",{style:{display:"flex",gap:8}},
+            h("input",{placeholder:"Nombre del nuevo tipster...",value:newTip,onChange:e=>setNewTip(e.target.value),onKeyDown:e=>e.key==="Enter"&&addTip(),style:{...S.inp,flex:1}}),
+            h("button",{onClick:addTip,style:S.btn("#166534","#4ade80","#22c55e")},"+ AÑADIR")
+          )
+        ),
+        h("div",{style:S.card()},
+          h("div",{style:{fontSize:"11px",color:"#94a3b8",marginBottom:10,fontWeight:600}},"Datos"),
+          h("div",{style:{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}},
+            h("button",{onClick:()=>{const d=JSON.stringify({bets,unitSize,tipsters},null,2);const a=document.createElement("a");a.href="data:application/json;charset=utf-8,"+encodeURIComponent(d);a.download="mlb-tracker-"+today()+".json";a.click();showT("Backup descargado ✓");},style:S.btn("transparent","#60a5fa","#1e3a5f")},"⬇ Exportar JSON"),
+            h("label",{style:{...S.btn("transparent","#a78bfa","#4c1d95"),cursor:"pointer"}},"⬆ Importar JSON",
+              h("input",{type:"file",accept:".json",style:{display:"none"},onChange:e=>{
+                const f=e.target.files[0];if(!f)return;
+                const r=new FileReader();r.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(d.bets)savB(d.bets.map(x=>({taken:true,...x})));if(d.unitSize){savU(d.unitSize);setUInput(String(d.unitSize));}if(d.tipsters)savT(d.tipsters);showT("Importado ✓");}catch{showT("Archivo inválido","err");}};r.readAsText(f);
+              }})
+            )
+          ),
+          h("button",{onClick:()=>{if(confirm("¿Borrar todo? No hay vuelta atrás.")){savB([]);showT("Datos borrados","warn");}},style:S.btn("#2e0a0a","#f87171","#991b1b")},"🗑 Borrar todo")
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
