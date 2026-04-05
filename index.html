@@ -203,7 +203,7 @@ async function scanImg(b64,mt,key){
   if(s===-1||e===-1)throw new Error("No se pudo extraer datos. Asegurate de que sea un ticket de apuestas.");
   try{return JSON.parse(cleaned.slice(s,e+1));}catch(pe){throw new Error("Error al parsear: "+pe.message);}
 }
-function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=(ev)=>rej(new Error("No se pudo leer el archivo. Verifica que sea una imagen válida."));r.readAsDataURL(file);});}
+function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>{const result=r.result||"";const parts=result.split(",");res(parts.length>1?parts[1]:result);};r.onerror=rej;r.readAsDataURL(file);});}
 
 // ── Detected bet card (fully editable) ────────────────────────────────────
 function DetectedCard({bet,tipsters,unitSize,onAdd,onAddTipster}){
@@ -312,12 +312,12 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster}){
   const [ki,setKi]=useState(apiKey||"");
 
   const process=async(file)=>{
-    if(!file||!file.type.startsWith("image/")){setError("Solo se aceptan imágenes PNG, JPG o WEBP. El archivo seleccionado no es válido.");return;}
+    if(!file){setError("No se seleccionó ningún archivo.");return;} const isImg=file.type.startsWith("image/")||file.type===""||/\.(png|jpg|jpeg|webp|gif|bmp)$/i.test(file.name); if(!isImg){setError("Solo se aceptan imágenes PNG, JPG o WEBP.");return;}
     const key=apiKey||ki;
     if(!key){setShowKey(true);setError("Configura tu API key primero.");return;}
     setError(null);setDetected(null);setPreview(URL.createObjectURL(file));setScanning(true);
-    try{const b64=await toB64(file);const r=await scanImg(b64,file.type,key);setDetected(r);}
-    catch(e){setError(e instanceof Error ? e.message : (e?.message || String(e) || "Error desconocido."));}
+    try{const b64=await toB64(file);const mt=file.type||(/\.png$/i.test(file.name)?"image/png":/\.(jpg|jpeg)$/i.test(file.name)?"image/jpeg":"image/png"); const r=await scanImg(b64,mt,key);setDetected(r);}
+    catch(e){setError(e?.message||String(e)||"Error desconocido. Intenta de nuevo.");}
     finally{setScanning(false);}
   };
 
