@@ -317,7 +317,7 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster}){
     if(!key){setShowKey(true);setError("Configura tu API key primero.");return;}
     setError(null);setDetected(null);setPreview(URL.createObjectURL(file));setScanning(true);
     try{const b64=await toB64(file);const r=await scanImg(b64,file.type,key);setDetected(r);}
-    catch(e){setError("Error: "+e.message);}
+    catch(e){setError(e?.message||String(e)||"Error desconocido. Intenta de nuevo.");}
     finally{setScanning(false);}
   };
 
