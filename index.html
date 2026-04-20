@@ -327,6 +327,29 @@ async function scanText(text,key,instructions,gamesContext){
   return callClaude(content,key);
 }
 
+// Parse a games-schedule screenshot into a plain-text list
+const GAMES_PROMPT=`You are parsing a sports schedule screenshot. Extract the list of MLB games shown across all images.
+Return PLAIN TEXT ONLY (no JSON, no markdown, no commentary). One game per line in this exact format:
+"Away Team vs Home Team — HH:MM (local time if visible)"
+Rules:
+- Use full team names when possible (e.g. "New York Yankees vs Boston Red Sox").
+- If only abbreviations are visible, keep them.
+- Skip odds, probable pitchers, records, or anything else — only the matchup + time.
+- If multiple images show the same game, include it only once.
+- If no games are visible, return the literal string NO_GAMES.`;
+
+async function parseGamesFromImages(imgs,key){
+  const content=imgs.map(({b64,mt})=>({type:"image",source:{type:"base64",media_type:mt,data:b64}}));
+  content.push({type:"text",text:GAMES_PROMPT});
+  let resp;
+  try{resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-opus-4-5-20251101",max_tokens:2000,messages:[{role:"user",content}]})});}catch{throw new Error("No se pudo conectar con la API.");}
+  if(!resp.ok){let em="API error "+resp.status;try{const e=await resp.json();em=e.error?.message||em;}catch{}throw new Error(em);}
+  let d;try{d=await resp.json();}catch{throw new Error("Respuesta inválida del servidor.");}
+  const raw=(d.content?.[0]?.text||"").trim().replace(/```\w*\s*/g,"").replace(/```\s*/g,"").trim();
+  if(!raw||/^NO_GAMES$/i.test(raw))throw new Error("No se detectaron partidos en la imagen.");
+  return raw;
+}
+
 function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>{const result=r.result||"";const parts=result.split(",");res(parts.length>1?parts[1]:result);};r.onerror=rej;r.readAsDataURL(file);});}
 
 // Normalize parlayLegs from scanner — handle both string[] and {desc,odds}[] shapes
@@ -342,10 +365,10 @@ function normalizeScannedLegs(rawLegs){
 }
 
 // ── Detected bet card (fully editable) ────────────────────────────────────
-function DetectedCard({bet,tipsters,unitSize,onAdd,onAddTipster}){
+function DetectedCard({bet,tipsters,unitSize,onAdd,onAddTipster,defaultTipster}){
   const initialLegs=bet.isParlay?normalizeScannedLegs(bet.parlayLegs).map(l=>({...l,odds:l.odds==null?"":String(l.odds)})):[];
   const [f,setF]=useState({
-    tipster:tipsters[0]||"Claude AI",
+    tipster:defaultTipster||tipsters[0]||"Claude AI",
     taken:true,nobet:false,
     result:bet.result||"pending",
     odds:String(bet.odds||""),
@@ -464,10 +487,146 @@ function DetectedCard({bet,tipsters,unitSize,onAdd,onAddTipster}){
   );
 }
 
-// ── Scanner (sub-tabs: Imágenes / Texto / Partidos del día) ────────────────
+// ── Games-of-the-day block (general, outside sub-tabs) ─────────────────────
+function GamesBlock({apiKey,gamesOfDay,onGamesChange,setSharedError}){
+  const [expanded,setExpanded]=useState(false);
+  const [draft,setDraft]=useState(gamesOfDay?.text||"");
+  const [drag,setDrag]=useState(false);
+  const [imgs,setImgs]=useState([]); // [{file, url}]
+  const [parsing,setParsing]=useState(false);
+  const [localError,setLocalError]=useState(null);
+  const inputRef=useRef(null);
+  const MAX_GAMES_IMG=3;
+
+  useEffect(()=>{setDraft(gamesOfDay?.text||"");},[gamesOfDay?.text,gamesOfDay?.date]);
+  useEffect(()=>()=>{imgs.forEach(i=>{try{URL.revokeObjectURL(i.url);}catch{}});},[]);
+
+  const stale=gamesOfDay&&gamesOfDay.date&&gamesOfDay.date!==today()&&gamesOfDay.text;
+  const active=gamesOfDay&&gamesOfDay.date===today()&&gamesOfDay.text?gamesOfDay.text:"";
+  const gameCount=active?active.split(/\n/).filter(s=>s.trim()).length:0;
+
+  const addImgs=(list)=>{
+    const incoming=Array.from(list||[]).filter(f=>f.type.startsWith("image/")||/\.(png|jpg|jpeg|webp|gif|bmp)$/i.test(f.name));
+    if(!incoming.length){setLocalError("Solo imágenes.");return;}
+    setLocalError(null);
+    const room=MAX_GAMES_IMG-imgs.length;
+    if(room<=0){setLocalError("Máximo "+MAX_GAMES_IMG+" imágenes para la lista.");return;}
+    setImgs([...imgs,...incoming.slice(0,room).map(file=>({file,url:URL.createObjectURL(file)}))]);
+  };
+  const rmImg=(i)=>{const f=imgs[i];if(f){try{URL.revokeObjectURL(f.url);}catch{}}setImgs(imgs.filter((_,j)=>j!==i));};
+  const clearImgs=()=>{imgs.forEach(i=>{try{URL.revokeObjectURL(i.url);}catch{}});setImgs([]);};
+
+  const parseImg=async()=>{
+    if(!imgs.length){setLocalError("Añade al menos una imagen.");return;}
+    if(!apiKey){setLocalError("Configura tu API key primero.");return;}
+    setLocalError(null);setParsing(true);
+    try{
+      const data=await Promise.all(imgs.map(async({file})=>{
+        const b64=await toB64(file);
+        const mt=file.type||(/\.png$/i.test(file.name)?"image/png":/\.(jpg|jpeg)$/i.test(file.name)?"image/jpeg":"image/png");
+        return {b64,mt};
+      }));
+      const parsed=await parseGamesFromImages(data,apiKey);
+      // Append to existing draft (or replace if empty)
+      setDraft(draft.trim()?draft.trim()+"\n"+parsed:parsed);
+      clearImgs();
+    }catch(e){setLocalError(e?.message||"Error al parsear imagen.");}
+    finally{setParsing(false);}
+  };
+
+  const save=()=>{onGamesChange({date:today(),text:draft.trim()});setLocalError(null);setSharedError&&setSharedError(null);};
+  const clearAll=()=>{onGamesChange({date:today(),text:""});setDraft("");clearImgs();};
+  const useStaleAsToday=()=>{onGamesChange({date:today(),text:gamesOfDay.text});setDraft(gamesOfDay.text);};
+
+  const headerBg=active?"#f0fdf4":stale?"#fef9c3":"#fff";
+  const headerBorder=active?"#86efac":stale?"#fde047":"#e2e8f0";
+  const headerColor=active?"#15803d":stale?"#a16207":"#64748b";
+
+  return h("div",{style:{background:headerBg,border:"1px solid "+headerBorder,borderRadius:10,marginBottom:14,boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}},
+    // Compact header (always visible)
+    h("div",{onClick:()=>setExpanded(!expanded),style:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",cursor:"pointer",gap:10,flexWrap:"wrap"}},
+      h("div",{style:{display:"flex",alignItems:"center",gap:10,minWidth:0,flex:1}},
+        h("span",{style:{fontSize:"18px"}},"🗓"),
+        h("div",{style:{minWidth:0}},
+          h("div",{style:{fontSize:"12px",fontWeight:700,color:headerColor}},"Partidos del día"),
+          h("div",{style:{fontSize:"10px",color:"#64748b",marginTop:2}},
+            active
+              ?"✓ "+gameCount+" partidos guardados para "+gamesOfDay.date+" — se incluye como contexto en cada escaneo"
+              :stale
+                ?"⚠ Lista de "+gamesOfDay.date+" desactualizada (hoy "+today()+")"
+                :"Ninguna lista guardada. Pega texto o imágenes para añadir contexto a los escaneos."
+          )
+        )
+      ),
+      h("span",{style:{fontSize:"12px",color:headerColor,fontWeight:700,flexShrink:0}},expanded?"▲":"▼")
+    ),
+
+    expanded&&h("div",{style:{padding:"4px 14px 14px",borderTop:"1px solid "+headerBorder}},
+
+      stale&&h("div",{style:{padding:"10px 12px",background:"#fef9c3",border:"1px solid #fde047",borderRadius:6,marginBottom:10,fontSize:"11px",color:"#a16207"}},
+        h("div",{style:{fontWeight:700,marginBottom:4}},"⚠ Lista guardada para "+gamesOfDay.date),
+        h("div",{style:{marginBottom:8}},"Hoy es "+today()+". Actualízala para que Claude use los partidos correctos."),
+        h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
+          h("button",{onClick:useStaleAsToday,style:{...S.btn("#fef3c7","#a16207","#fde68a"),padding:"4px 10px",fontSize:"10px"}},"Seguir usando para hoy"),
+          h("button",{onClick:()=>{setDraft("");onGamesChange({date:today(),text:""});},style:{...S.btn("#fee2e2","#dc2626","#fca5a5"),padding:"4px 10px",fontSize:"10px"}},"Borrar y empezar de nuevo")
+        )
+      ),
+
+      h("div",{style:{fontSize:"10px",color:"#64748b",marginBottom:10,lineHeight:1.5,padding:"8px 10px",background:"#fff",border:"1px solid #e2e8f0",borderRadius:6}},
+        "Pega el texto de los partidos de hoy (MLB.com, ESPN, etc.) o sube capturas de pantalla y Claude extrae la lista. Se guarda como contexto canónico para que cada apuesta escaneada se asigne al partido correcto."
+      ),
+
+      // Text area
+      h("div",{style:{marginBottom:10}},
+        h("label",{style:S.lbl},"Partidos del día — pegado libre"),
+        h("textarea",{value:draft,onChange:e=>setDraft(e.target.value),placeholder:"Baltimore Orioles @ Tampa Bay Rays — 7:05 PM ET\nNew York Yankees @ Boston Red Sox — 7:10 PM ET\nLos Angeles Dodgers @ San Francisco Giants — 10:15 PM ET",style:{...S.inp,minHeight:140,resize:"vertical",fontFamily:"inherit",lineHeight:1.5,fontSize:"12px"}})
+      ),
+
+      // Image drop for games
+      h("label",{style:S.lbl},"O sube imágenes del schedule"),
+      h("div",{className:"drop-zone"+(drag?" dragging":""),
+        onClick:()=>inputRef.current&&inputRef.current.click(),
+        onDrop:(e)=>{e.preventDefault();setDrag(false);addImgs(e.dataTransfer.files);},
+        onDragOver:(e)=>{e.preventDefault();setDrag(true);},
+        onDragLeave:()=>setDrag(false),
+        style:{display:"block",padding:"18px 14px"}
+      },
+        h("input",{ref:inputRef,type:"file",accept:"image/*",multiple:true,style:{display:"none"},onChange:e=>{addImgs(e.target.files);e.target.value="";}}),
+        h("div",{style:{fontSize:"20px",marginBottom:4}},"📷"),
+        h("div",{style:{color:"#64748b",fontWeight:600,fontSize:"11px",marginBottom:2}},"Arrastra hasta "+MAX_GAMES_IMG+" imágenes del schedule"),
+        h("div",{style:{color:"#94a3b8",fontSize:"10px"}},"Claude extrae los partidos y los añade al textarea de arriba")
+      ),
+
+      imgs.length>0&&h("div",{className:"thumb-grid"},
+        imgs.map((f,i)=>h("div",{key:i,className:"thumb-item"},
+          h("img",{src:f.url,alt:"games "+(i+1)}),
+          h("button",{className:"thumb-remove",onClick:e=>{e.stopPropagation();rmImg(i);},title:"Quitar"},"×")
+        ))
+      ),
+
+      imgs.length>0&&h("button",{onClick:parseImg,disabled:parsing||!apiKey,style:{...S.btn(parsing||!apiKey?"#cbd5e1":"#7c3aed","#fff",parsing||!apiKey?"#cbd5e1":"#7c3aed"),width:"100%",marginTop:8,padding:"10px",fontSize:"12px",fontWeight:700}},
+        parsing?h("span",null,h("span",{className:"spin",style:{display:"inline-block",marginRight:8}},"⚾"),"Extrayendo partidos..."):"📷 → 📝 Extraer partidos de "+imgs.length+" imagen"+(imgs.length>1?"es":"")
+      ),
+
+      localError&&h("div",{style:{marginTop:8,padding:"8px 10px",background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:6,color:"#dc2626",fontSize:"11px"}},"⚠ "+localError),
+
+      h("div",{style:{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}},
+        h("button",{onClick:save,disabled:draft===(gamesOfDay?.text||""),style:{...S.btn(draft===(gamesOfDay?.text||"")?"#cbd5e1":"#2563eb","#fff",draft===(gamesOfDay?.text||"")?"#cbd5e1":"#2563eb"),padding:"10px 18px",fontWeight:700,cursor:draft===(gamesOfDay?.text||"")?"not-allowed":"pointer"}},"💾 Guardar para hoy"),
+        active&&h("button",{onClick:clearAll,style:S.btn("#fee2e2","#dc2626","#fca5a5")},"🗑 Borrar lista")
+      ),
+
+      active&&h("div",{style:{marginTop:12,padding:"10px 12px",background:"#fff",border:"1px solid #86efac",borderRadius:6,fontSize:"10px",color:"#15803d"}},
+        h("div",{style:{fontWeight:700,marginBottom:4}},"✓ Activa para hoy — Claude la usará como contexto en cada escaneo"),
+        h("div",null,gameCount+" partidos · "+active.length+" caracteres")
+      )
+    )
+  );
+}
+
+// ── Scanner (general games block + Imágenes / Texto sub-tabs) ──────────────
 function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gamesOfDay,onGamesChange}){
   const MAX_IMG=5;
-  const [tab,setTab]=useState("images"); // images | text | games
+  const [tab,setTab]=useState("images"); // images | text
   const [drag,setDrag]=useState(false);
   const [scanning,setScanning]=useState(false);
   const [files,setFiles]=useState([]); // [{file, url}]
@@ -477,16 +636,15 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
   const [ki,setKi]=useState(apiKey||"");
   const [instructions,setInstructions]=useState("");
   const [pastedText,setPastedText]=useState("");
-  const [gamesDraft,setGamesDraft]=useState(gamesOfDay?.text||"");
+  const [pickedTipster,setPickedTipster]=useState(tipsters[0]||"Claude AI");
   const fileInputRef=useRef(null);
 
-  // Keep games draft in sync when parent changes (e.g. loaded from storage)
-  useEffect(()=>{setGamesDraft(gamesOfDay?.text||"");},[gamesOfDay?.text,gamesOfDay?.date]);
+  // If tipsters list changes and picked one is gone, reset
+  useEffect(()=>{if(!tipsters.includes(pickedTipster))setPickedTipster(tipsters[0]||"Claude AI");},[tipsters]);
 
   // Cleanup object URLs on unmount
   useEffect(()=>()=>{files.forEach(f=>{try{URL.revokeObjectURL(f.url);}catch{}});},[]);
 
-  const gamesStale=gamesOfDay&&gamesOfDay.date&&gamesOfDay.date!==today()&&gamesOfDay.text;
   const gamesActive=gamesOfDay&&gamesOfDay.date===today()&&gamesOfDay.text?gamesOfDay.text:"";
 
   const addFiles=(list)=>{
@@ -532,11 +690,24 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
     finally{setScanning(false);}
   };
 
-  const saveGames=()=>{onGamesChange({date:today(),text:gamesDraft.trim()});setError(null);};
-  const clearGames=()=>{onGamesChange({date:today(),text:""});setGamesDraft("");};
-  const useStaleAsToday=()=>{onGamesChange({date:today(),text:gamesOfDay.text});setGamesDraft(gamesOfDay.text);};
-
   const TAB=(label,val,badge)=>h("button",{key:val,onClick:()=>{setTab(val);setError(null);setDetected(null);},style:{flex:1,padding:"10px 8px",border:"none",background:tab===val?"#2563eb":"transparent",color:tab===val?"#fff":"#64748b",cursor:"pointer",fontSize:"11px",fontFamily:"inherit",fontWeight:tab===val?700:500,borderRight:"1px solid #e2e8f0"}},label,badge!=null&&h("span",{style:{marginLeft:6,padding:"1px 6px",borderRadius:10,fontSize:"9px",background:tab===val?"rgba(255,255,255,0.25)":"#f1f5f9",color:tab===val?"#fff":"#94a3b8",fontWeight:700}},badge));
+
+  // Shared tipster + instructions row used in both Images and Text tabs
+  const TipsterAndInstructions=(instrPlaceholder)=>h(React.Fragment,null,
+    h("div",{style:{padding:"10px 12px",background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:8,marginTop:14,marginBottom:10}},
+      h("label",{style:{...S.lbl,color:"#1d4ed8",marginBottom:6}},"🎯 Tipster para las apuestas detectadas"),
+      h("div",{style:{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}},
+        h("select",{value:pickedTipster,onChange:e=>setPickedTipster(e.target.value),style:{...S.inp,flex:"1 1 160px",fontWeight:600}},
+          tipsters.map(t=>h("option",{key:t,value:t},t))
+        ),
+        h("div",{style:{fontSize:"10px",color:"#64748b",flex:"1 1 180px"}},"Se asigna por defecto a todas las apuestas detectadas en este escaneo. Puedes cambiarlo en cada apuesta individual.")
+      )
+    ),
+    h("div",null,
+      h("label",{style:S.lbl},"💬 Instrucciones / Comentarios para el escáner (opcional)"),
+      h("textarea",{value:instructions,onChange:e=>setInstructions(e.target.value),placeholder:instrPlaceholder,style:{...S.inp,minHeight:80,resize:"vertical",fontFamily:"inherit",lineHeight:1.45}})
+    )
+  );
 
   return h("div",null,
     // API key card
@@ -555,21 +726,13 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
       h("div",{style:{fontSize:"9px",color:"#94a3b8",marginTop:6}},"Guardada en tu navegador · console.anthropic.com → API Keys")
     ),
 
-    // Games-of-day banner (shown on Images and Text tabs if populated)
-    gamesActive&&tab!=="games"&&h("div",{style:{padding:"8px 12px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:6,fontSize:"10px",color:"#15803d",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}},
-      h("span",null,"✓ Usando lista de partidos del día ("+gamesActive.split(/\n/).filter(s=>s.trim()).length+" partidos) como contexto"),
-      h("button",{onClick:()=>setTab("games"),style:{...S.btn("#dcfce7","#15803d","#86efac"),padding:"3px 8px",fontSize:"10px"}},"Ver / editar")
-    ),
-    gamesStale&&tab!=="games"&&h("div",{style:{padding:"8px 12px",background:"#fef9c3",border:"1px solid #fde047",borderRadius:6,fontSize:"10px",color:"#a16207",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}},
-      h("span",null,"⚠ La lista de partidos es de "+gamesOfDay.date+" (desactualizada). Actualízala antes de escanear."),
-      h("button",{onClick:()=>setTab("games"),style:{...S.btn("#fef3c7","#a16207","#fde68a"),padding:"3px 8px",fontSize:"10px"}},"Actualizar"),
-    ),
+    // GENERAL Games-of-the-day block (always visible above the sub-tabs)
+    h(GamesBlock,{apiKey:apiKey||ki,gamesOfDay,onGamesChange,setSharedError:setError}),
 
-    // Sub-tabs
+    // Sub-tabs: Imágenes / Texto
     h("div",{style:{display:"flex",marginBottom:14,border:"1px solid #e2e8f0",borderRadius:8,overflow:"hidden",background:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}},
       TAB("📸 Imágenes","images",files.length||null),
-      TAB("📋 Texto","text",pastedText.trim()?"•":null),
-      TAB("🗓 Partidos del día","games",gamesActive?"✓":(gamesStale?"⚠":null))
+      TAB("📋 Texto","text",pastedText.trim()?"•":null)
     ),
 
     // TAB: Images
@@ -597,10 +760,7 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
         h("span",null,files.length+" / "+MAX_IMG+" screenshots"),
         h("button",{onClick:clearAll,style:{...S.btn("#fee2e2","#dc2626","#fca5a5"),padding:"4px 10px",fontSize:"10px"}},"Quitar todos")
       ),
-      h("div",{style:{marginTop:14}},
-        h("label",{style:S.lbl},"💬 Instrucciones / Comentarios para el escáner (opcional)"),
-        h("textarea",{value:instructions,onChange:e=>setInstructions(e.target.value),placeholder:"Ej: Las imágenes son 3 partes del mismo ticket combinado. Tomar el stake de la primera imagen. Es un parlay aunque parezcan apuestas separadas.",style:{...S.inp,minHeight:80,resize:"vertical",fontFamily:"inherit",lineHeight:1.45}})
-      ),
+      TipsterAndInstructions("Ej: Las imágenes son 3 partes del mismo ticket combinado. Tomar el stake de la primera imagen. Es un parlay aunque parezcan apuestas separadas."),
       h("button",{onClick:runImageScan,disabled:scanning||!files.length,style:{...S.btn(scanning||!files.length?"#cbd5e1":"#2563eb","#fff",scanning||!files.length?"#cbd5e1":"#2563eb"),width:"100%",marginTop:12,padding:"12px",fontSize:"13px",fontWeight:700,cursor:scanning||!files.length?"not-allowed":"pointer"}},
         scanning
           ?h("span",null,h("span",{className:"spin",style:{display:"inline-block",marginRight:8}},"⚾"),"Analizando "+files.length+" imagen"+(files.length>1?"es":"")+"...")
@@ -621,10 +781,7 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
           h("button",{onClick:()=>setPastedText(""),style:{...S.btn("#fee2e2","#dc2626","#fca5a5"),padding:"3px 8px",fontSize:"10px"}},"Borrar")
         )
       ),
-      h("div",{style:{marginTop:8}},
-        h("label",{style:S.lbl},"💬 Instrucciones adicionales (opcional)"),
-        h("textarea",{value:instructions,onChange:e=>setInstructions(e.target.value),placeholder:"Ej: La fecha es de hoy. El tipster es 'Durden'. Cuotas en formato americano.",style:{...S.inp,minHeight:70,resize:"vertical",fontFamily:"inherit",lineHeight:1.45}})
-      ),
+      TipsterAndInstructions("Ej: La fecha es de hoy. Cuotas en formato americano. El stake está en la última línea."),
       h("button",{onClick:runTextScan,disabled:scanning||!pastedText.trim(),style:{...S.btn(scanning||!pastedText.trim()?"#cbd5e1":"#2563eb","#fff",scanning||!pastedText.trim()?"#cbd5e1":"#2563eb"),width:"100%",marginTop:12,padding:"12px",fontSize:"13px",fontWeight:700,cursor:scanning||!pastedText.trim()?"not-allowed":"pointer"}},
         scanning
           ?h("span",null,h("span",{className:"spin",style:{display:"inline-block",marginRight:8}},"⚾"),"Analizando texto...")
@@ -632,41 +789,12 @@ function Scanner({tipsters,unitSize,apiKey,onApiKeyChange,onAdd,onAddTipster,gam
       )
     ),
 
-    // TAB: Games of the day
-    tab==="games"&&h(React.Fragment,null,
-      h("div",{style:{fontSize:"11px",color:"#64748b",marginBottom:8,padding:"10px 12px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:6,lineHeight:1.5}},
-        "🗓 Pega la lista de partidos del día (MLB.com, ESPN, o cualquier fuente). Claude la usa como referencia al escanear para asignar cada apuesta al partido correcto. ",
-        h("strong",null,"Se guarda con la fecha de hoy ("+today()+")."),
-        " Al día siguiente verás un aviso para actualizarla."
-      ),
-      gamesStale&&h("div",{style:{padding:"10px 12px",background:"#fef9c3",border:"1px solid #fde047",borderRadius:6,marginBottom:10,fontSize:"11px",color:"#a16207"}},
-        h("div",{style:{fontWeight:700,marginBottom:4}},"⚠ Lista guardada para "+gamesOfDay.date),
-        h("div",{style:{marginBottom:8}},"Hoy es "+today()+". Actualízala para que Claude use los partidos correctos."),
-        h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},
-          h("button",{onClick:useStaleAsToday,style:{...S.btn("#fef3c7","#a16207","#fde68a"),padding:"4px 10px",fontSize:"10px"}},"Seguir usando para hoy"),
-          h("button",{onClick:()=>{setGamesDraft("");onGamesChange({date:today(),text:""});},style:{...S.btn("#fee2e2","#dc2626","#fca5a5"),padding:"4px 10px",fontSize:"10px"}},"Borrar y empezar de nuevo")
-        )
-      ),
-      h("div",{style:{marginBottom:10}},
-        h("label",{style:S.lbl},"Partidos del día — pegado libre"),
-        h("textarea",{value:gamesDraft,onChange:e=>setGamesDraft(e.target.value),placeholder:"Pega los partidos de hoy en el formato que sea. Ejemplo:\n\nBaltimore Orioles @ Tampa Bay Rays — 7:05 PM ET\nNew York Yankees @ Boston Red Sox — 7:10 PM ET\nLos Angeles Dodgers @ San Francisco Giants — 10:15 PM ET\n\n(También puedes pegar directamente de MLB.com o ESPN; Claude entiende cualquier formato.)",style:{...S.inp,minHeight:200,resize:"vertical",fontFamily:"inherit",lineHeight:1.5,fontSize:"12px"}})
-      ),
-      h("div",{style:{display:"flex",gap:8,flexWrap:"wrap"}},
-        h("button",{onClick:saveGames,disabled:gamesDraft===(gamesOfDay?.text||""),style:{...S.btn(gamesDraft===(gamesOfDay?.text||"")?"#cbd5e1":"#2563eb","#fff",gamesDraft===(gamesOfDay?.text||"")?"#cbd5e1":"#2563eb"),padding:"10px 18px",fontWeight:700,cursor:gamesDraft===(gamesOfDay?.text||"")?"not-allowed":"pointer"}},"💾 Guardar para hoy"),
-        gamesActive&&h("button",{onClick:clearGames,style:S.btn("#fee2e2","#dc2626","#fca5a5")},"🗑 Borrar lista")
-      ),
-      gamesActive&&h("div",{style:{marginTop:14,padding:"10px 12px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:6,fontSize:"10px",color:"#15803d"}},
-        h("div",{style:{fontWeight:700,marginBottom:4}},"✓ Activa para hoy — Claude la usará como contexto en cada escaneo"),
-        h("div",null,gamesActive.split(/\n/).filter(s=>s.trim()).length+" partidos · "+gamesActive.length+" caracteres")
-      )
-    ),
-
     error&&h("div",{style:{marginTop:10,padding:"10px 12px",background:"#fee2e2",border:"1px solid #fca5a5",borderRadius:6,color:"#dc2626",fontSize:"11px"}},"⚠ "+error),
 
     detected&&h("div",{className:"slide-in",style:{marginTop:14}},
       h("div",{style:{...S.stitle,marginBottom:10}},h("span",{style:S.dot("#15803d")}),detected.bets.length+" apuesta"+(detected.bets.length>1?"s":"")+" detectada"+(detected.bets.length>1?"s":""),(detected.sportsbook&&h("span",{style:{color:"#94a3b8",fontSize:"10px",marginLeft:8}},"· "+detected.sportsbook))),
-      h("div",{style:{fontSize:"10px",color:"#64748b",marginBottom:10,padding:"8px 12px",background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:6}},"👇 Revisa y edita cada apuesta antes de añadirla. Para parlays, puedes editar las líneas y odds de cada leg, y marcar W/L individualmente."),
-      detected.bets.map((b,i)=>h(DetectedCard,{key:i,bet:b,tipsters,unitSize,onAdd,onAddTipster}))
+      h("div",{style:{fontSize:"10px",color:"#64748b",marginBottom:10,padding:"8px 12px",background:"#eff6ff",border:"1px solid #93c5fd",borderRadius:6}},"👇 Revisa y edita cada apuesta antes de añadirla. Tipster pre-asignado: ",h("strong",null,pickedTipster),". Para parlays, puedes editar las líneas y odds de cada leg, y marcar W/L individualmente."),
+      detected.bets.map((b,i)=>h(DetectedCard,{key:i,bet:b,tipsters,unitSize,onAdd,onAddTipster,defaultTipster:pickedTipster}))
     )
   );
 }
