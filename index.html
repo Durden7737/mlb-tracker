@@ -869,7 +869,7 @@ function App(){
         h("div",{style:{fontSize:"16px",fontWeight:800,color:"#1a1a2e",letterSpacing:"-0.02em"}},"⚾ MLB ",h("span",{style:{color:"#2563eb"}},"TRACKER")),
         h("div",{style:{fontSize:"9px",color:"#94a3b8",letterSpacing:"0.1em",marginTop:2,fontWeight:600}},"P&L EN PESOS COLOMBIANOS")
       ),
-      h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},NB("DASHBOARD","dashboard"),NB("APUESTAS","bets",bets.length),NB("TIPSTERS","tipsters",tipsters.length),NB("+ NUEVA","add"),NB("⚙","settings"))
+      h("div",{style:{display:"flex",gap:6,flexWrap:"wrap"}},NB("DASHBOARD","dashboard"),NB("APUESTAS","bets",bets.length),NB("⏳ PENDIENTES","pending",stats.pend),NB("TIPSTERS","tipsters",tipsters.length),NB("+ NUEVA","add"),NB("⚙","settings"))
     ),
 
     h("div",{style:{padding:"20px",maxWidth:960,margin:"0 auto"}},
@@ -934,6 +934,32 @@ function App(){
           );
         })
       ),
+
+      view==="pending"&&(()=>{
+        const pList=bets.filter(b=>b.result==="pending").sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+        if(pList.length===0)return h("div",{style:{...S.card(),textAlign:"center",padding:"40px 20px"}},
+          h("div",{style:{fontSize:"36px",marginBottom:10}},"✨"),
+          h("div",{style:{fontSize:"13px",color:"#15803d",fontWeight:700,marginBottom:4}},"Nada pendiente"),
+          h("div",{style:{fontSize:"11px",color:"#94a3b8"}},"Todas tus apuestas están resueltas. Vuelve aquí cuando agregues nuevas.")
+        );
+        const pbyD=pList.reduce((a,b)=>{(a[b.date]=a[b.date]||[]).push(b);return a;},{});
+        const pdts=Object.keys(pbyD).sort((a,b)=>b.localeCompare(a));
+        return h(React.Fragment,null,
+          h("div",{style:{...S.stitle,marginBottom:14}},h("span",{style:S.dot("#a16207")}),"⏳ APUESTAS PENDIENTES ("+pList.length+")"),
+          pdts.map(d=>{
+            const db=pbyD[d];
+            const dtk=db.filter(b=>b.taken!==false&&!b.nobet).length;
+            const dpot=db.filter(b=>b.taken!==false&&!b.nobet&&b.odds).reduce((a,b)=>a+getStake(b,unitSize)*b.odds,0);
+            return h("div",{key:d},
+              h("div",{style:{fontSize:"10px",color:"#94a3b8",marginBottom:8,marginTop:14,paddingBottom:6,borderBottom:"1px solid #e2e8f0",display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:4,fontWeight:600}},
+                h("span",null,"📅 "+d+" — "+db.length+" pendiente"+(db.length===1?"":"s")+" · "+dtk+" jugadas"),
+                dpot>0&&h("span",{style:{color:"#1d4ed8",fontWeight:700}},"pot. "+fmt(dpot))
+              ),
+              db.map(b=>h(BetCard,{key:b.id,bet:b,unitSize,tipsters,onResult:updR,onLegResult:updLegR,onDelete:delB,onToggle:togT,onEdit:setEB,showDelete:true}))
+            );
+          })
+        );
+      })(),
 
       view==="add"&&h("div",{style:{maxWidth:620}},
         h("div",{style:{display:"flex",gap:0,marginBottom:16,border:"1px solid #e2e8f0",borderRadius:8,overflow:"hidden",background:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.06)"}},
