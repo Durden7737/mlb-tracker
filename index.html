@@ -2167,7 +2167,7 @@ const TIPSTER_STORAGE = 'mlb_tipsterList'
 const TIPSTER_LINKS   = 'mlb_tipsterLinks'
 const DEFAULT_TIPSTERS = ['Durden']
 const UNIT_COP = 5000
-const BOOKMAKERS = ['RushBet', 'Bwin', 'Betsson']
+const BOOKMAKERS = ['RushBet', 'Bwin', 'Betsson', 'Betano']
 
 // YYYY-MM-DD in the user's *local* timezone (unlike toISOString which is UTC).
 // Used anywhere we want today's calendar date in Colombia, not a UTC-shifted one.
@@ -6084,7 +6084,13 @@ function renderStagedCard(b) {
   const tipsterOpts   = optEmpty + optList(allTipsterNames(), b.tipster || '')
   const matchdayOpts  = optEmpty + optList(MATCHDAYS,           b.matchday || '')
   const betTypeOpts   = optEmpty + optList(BET_TYPES,           b.bet_type || '')
-  const bookmakerOpts = optEmpty + optList(BOOKMAKERS,          b.bookmaker || '')
+  // Split "Home vs Away" into two boxes so they can be edited separately;
+  // updateStagedMatchPart recombines them back into match_name.
+  const _mparts = splitMatchName(b.match_name)
+  // Bookmaker can hold one or two books stored as "Book A + Book B".
+  const _bkParts = splitBookmakers(b.bookmaker)
+  const bookmaker1Opts = optEmpty + optList(BOOKMAKERS,        _bkParts.book1)
+  const bookmaker2Opts = optEmpty + optList(BOOKMAKERS,        _bkParts.book2)
 
   // date_placed defaults to today (in local time) when the field is blank.
   // We still persist whatever the user types — this only fills an empty box.
@@ -6164,10 +6170,15 @@ function renderStagedCard(b) {
           ${hint('pick', b.pick)}
         </div>` : ''}
         <div class="staged-edit-field">
-          <label>Match</label>
-          <input type="text" value="${escapeHtml(b.match_name || '')}" placeholder="e.g. Yankees vs Red Sox"
-                 oninput="updateStagedField(${b.id}, 'match_name', this.value)" />
+          <label>Home team</label>
+          <input type="text" id="staged-home-${b.id}" list="team-options" value="${escapeHtml(_mparts.home)}" placeholder="e.g. Yankees"
+                 oninput="updateStagedMatchPart(${b.id})" />
           ${hint('match_name', b.match_name)}
+        </div>
+        <div class="staged-edit-field">
+          <label>Away team</label>
+          <input type="text" id="staged-away-${b.id}" list="team-options" value="${escapeHtml(_mparts.away)}" placeholder="e.g. Red Sox"
+                 oninput="updateStagedMatchPart(${b.id})" />
         </div>
         <div class="staged-edit-field">
           <label>Competition</label>
@@ -6207,7 +6218,11 @@ function renderStagedCard(b) {
         ${stakeField}
         <div class="staged-edit-field">
           <label>Bookmaker</label>
-          <select onchange="updateStagedField(${b.id}, 'bookmaker', this.value)">${bookmakerOpts}</select>
+          <select id="staged-book1-${b.id}" onchange="setStagedBookmakers(${b.id})">${bookmaker1Opts}</select>
+        </div>
+        <div class="staged-edit-field">
+          <label>Bookmaker 2 <span style="color:var(--gray-400); font-weight:400;">· optional</span></label>
+          <select id="staged-book2-${b.id}" onchange="setStagedBookmakers(${b.id})">${bookmaker2Opts}</select>
         </div>
         <div class="staged-edit-field">
           <label>Date placed</label>
@@ -6343,6 +6358,42 @@ window.updateStagedField = function(id, field, rawVal) {
   if (['odds', 'stake_cop', 'bookmaker', 'bet_type'].includes(field)) {
     refreshStagedToolbarCounter()
   }
+}
+
+// Split a stored "Home vs Away" match name into its two teams for the split
+// Home/Away boxes. Tolerates "vs", "vs.", "v" and stray whitespace.
+function splitMatchName(name) {
+  const s = String(name || '').trim()
+  if (!s) return { home: '', away: '' }
+  const parts = s.split(/\s+vs?\.?\s+/i)
+  return { home: (parts[0] || '').trim(), away: (parts.slice(1).join(' vs ') || '').trim() }
+}
+
+// Split a stored bookmaker string ("Book A + Book B") into its two slots.
+function splitBookmakers(bk) {
+  const s = String(bk || '').trim()
+  if (!s) return { book1: '', book2: '' }
+  const parts = s.split(/\s*\+\s*/)
+  return { book1: (parts[0] || '').trim(), book2: (parts[1] || '').trim() }
+}
+
+// Recombine the Home/Away boxes back into match_name ("Home vs Away") and
+// persist. Reads both live inputs so either box can change independently.
+window.updateStagedMatchPart = function(id) {
+  const h = (document.getElementById('staged-home-' + id)?.value || '').trim()
+  const a = (document.getElementById('staged-away-' + id)?.value || '').trim()
+  const combined = h && a ? `${h} vs ${a}` : (h || a)
+  updateStagedField(id, 'match_name', combined)
+}
+
+// Combine the two bookmaker dropdowns into the single bookmaker field. One book
+// → "Book"; two distinct books → "Book A + Book B". Keeps the schema unchanged
+// and flows straight into notes as "Bookmaker: …" on Confirm.
+window.setStagedBookmakers = function(id) {
+  const b1 = (document.getElementById('staged-book1-' + id)?.value || '').trim()
+  const b2 = (document.getElementById('staged-book2-' + id)?.value || '').trim()
+  const combined = (b1 && b2 && b1 !== b2) ? `${b1} + ${b2}` : (b1 || b2)
+  updateStagedField(id, 'bookmaker', combined)
 }
 
 // Tipster change on a staged card: persist it AND refresh the header chip +
